@@ -28,6 +28,9 @@ cp .env.example .env      # edit: context, GPU memory, HF_TOKEN
 ./start.sh                # auto-downloads weights, serves http://localhost:8888/v1
 ```
 
+Running on a 24 GB GPU (RTX 3090/4090)? Jump to
+[24 GB config](#24-gb-gpus-rtx-3090--4090).
+
 `start.sh` auto-creates `.env` from the example on first run, prefers
 `.venv/bin/python` when present, and **downloads the target and draft weight
 sets from Hugging Face automatically** on first launch (and resumes partial
@@ -50,6 +53,47 @@ downloads) — no manual fetching. Set `HF_TARGET_REPO` / `HF_DRAFT_REPO` in
 
 Concurrency note: the server generates one request at a time (batch-1
 speculative decoding); concurrent requests queue automatically.
+
+## 24 GB GPUs (RTX 3090 / 4090)
+
+The kit targets DGX Spark (121 GB) by default. On a 24 GB card the recipe is
+the same weights, a tighter KV budget, and NVFP4 KV — the model card calls it
+"14.2 GB + 1.4 GB + NVFP4 ≈ 220k tokens fully resident".
+
+```bash
+# .env — 24 GB recipe
+GPU_MEM_GB=22            # weights + caches budget; 24 GB card, keep ~2 GB headroom
+CONTEXT_SIZE=220000      # see math below
+CACHE_QUANT=nvfp4        # required at this size; lossless at generation level (measured)
+DRAFT_DIR=models/Qwen3.8-27B-DFlash2-EXL3-5.0bpw
+CPU_CACHE_GB=16          # optional, see notes
+```
+
+Memory math: weights are 15.6 GB total (14.2 target + 1.4 draft), so a 22 GB
+budget leaves ~6 GB of KV. NVFP4 KV costs ~18 KB/token (only the 16
+full-attention layers hold a KV cache; fp16 is ~64 KB/token) → **~220k tokens
+to ~262k (the native limit) fully resident**. Past that, tokens spill to CPU.
+
+RTX-class notes (vs the DGX Spark the numbers above were measured on):
+
+- **Perf is memory-bandwidth-bound at batch 1, and should be *higher* on an
+  RTX card**: GB10 reads weights from ~273 GB/s-class LPDDR5x unified memory;
+  a 3090/4090 reads the same weights from ~1 TB/s-class VRAM. Acceptance and
+  quality are unchanged — only tok/s moves. Not yet benchmarked on RTX, treat
+  the table in the model cards as the lower bound.
+- **CPU spill is actually useful here** (`CPU_CACHE_GB`): a desktop has
+  32–64 GB of system RAM. Cold pages spill over PCIe — slow to touch — but you
+  can set `CONTEXT_SIZE` past the resident limit and only rarely-visited
+  prompts pay the penalty.
+- **The 1M YaRN config does not fit**: 1M tokens of NVFP4 KV ≈ 19 GB on top of
+  15.6 GB of weights. Only reachable with CPU spill, and 262k is the
+  quality-faithful limit anyway — don't expect the 1M headroom to be useful
+  here.
+- **Use the fork on x86 too**: stock exllamav3 serves the model on CUDA, but
+  NVFP4 KV and DFlash2 drafting are fork features; install the fork's x86 CUDA
+  build.
+- Need more context than ~262k? `DRAFT_DIR=none` frees 1.4 GB (~+75k tokens),
+  at the cost of speculative decoding.
 
 ## Model cards
 
