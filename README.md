@@ -108,5 +108,5 @@ T=0.6 with acceptance 4.43 tokens/step; tool-eval-bench hardmode @ T=1.0:
 
 ## License
 
-Code in this repo: provided as-is for internal deployment. Model weights are
-Apache-2.0 derivatives (see model cards); exllamav3 is MIT.
+Code in this repo: [MIT](LICENSE). Model weights are Apache-2.0 derivatives
+(see model cards); exllamav3 is MIT.
