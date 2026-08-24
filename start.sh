@@ -28,6 +28,40 @@ CACHE_QUANT="${CACHE_QUANT:-none}"
 DRAFT_DIR="${DRAFT_DIR:-none}"
 CPU_CACHE_GB="${CPU_CACHE_GB:-0}"
 
+# --- auto-download from the Hub if missing --------------------
+# Repos are private: put HF_TOKEN=<token> in .env, or `hf auth login`.
+HF_TARGET_REPO="${HF_TARGET_REPO:-Mia-AiLab/Qwen3.8-27B-EXL3-3.5bpw}"
+HF_DRAFT_REPO="${HF_DRAFT_REPO:-Mia-AiLab/Qwen3.8-27B-DFlash2-EXL3-5.0bpw}"
+
+dl_model() {   # dl_model <repo_id> <dir> <label>
+    local repo="$1" dir="$2" label="$3"
+    if [ -f "$dir/config.json" ] && compgen -G "$dir/*.safetensors" > /dev/null; then
+        echo "$label: $dir already present — skipping download."
+        return 0
+    fi
+    echo "$label: not found at $dir — downloading from huggingface.co/$repo …"
+    mkdir -p "$dir"
+    "$PYTHON" - "$repo" "$dir" <<'PYEOF'
+import sys
+from huggingface_hub import snapshot_download
+path = snapshot_download(repo_id = sys.argv[1], local_dir = sys.argv[2])
+print(f"  downloaded -> {path}")
+PYEOF
+}
+
+dl_model "$HF_TARGET_REPO" "$MODEL_DIR" "target model"
+if [ "$DRAFT_DIR" != "none" ]; then
+    dl_model "$HF_DRAFT_REPO" "$DRAFT_DIR" "DFlash2 draft"
+fi
+
+# Context beyond the native 262144 needs the YaRN config variant.
+if [ "$CONTEXT_SIZE" -gt 262144 ] \
+   && [ -f "$MODEL_DIR/config.yarn-1m.json" ] \
+   && ! grep -q rope_scaling "$MODEL_DIR/config.json"; then
+    cp "$MODEL_DIR/config.yarn-1m.json" "$MODEL_DIR/config.json"
+    echo "CONTEXT_SIZE > 262k: switched $MODEL_DIR/config.json to the YaRN 1M variant."
+fi
+
 cmd=("$PYTHON" -u tools/serve_openai.py
      --model "$MODEL_DIR"
      --host "$HOST"

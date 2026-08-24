@@ -21,20 +21,27 @@ DFlash2/aarch64 support.
 
 ```bash
 # 1. install the exllamav3 fork (DFlash2 + aarch64 port) in a venv
-# 2. download the weight sets from Hugging Face into models/
+# 2. authenticate to Hugging Face (the weight repos are private):
+#    hf auth login     (or put HF_TOKEN=... in .env — see below)
 # 3. configure and launch:
-cp .env.example .env      # edit: model paths, context, GPU memory
-./start.sh                # serves http://localhost:8888/v1
+cp .env.example .env      # edit: context, GPU memory, HF_TOKEN
+./start.sh                # auto-downloads weights, serves http://localhost:8888/v1
 ```
 
-`start.sh` auto-creates `.env` from the example on first run and prefers
-`.venv/bin/python` when present.
+`start.sh` auto-creates `.env` from the example on first run, prefers
+`.venv/bin/python` when present, and **downloads the target and draft weight
+sets from Hugging Face automatically** on first launch (and resumes partial
+downloads) — no manual fetching. Set `HF_TARGET_REPO` / `HF_DRAFT_REPO` in
+`.env` to pull from a mirror instead.
 
 ## Configuration highlights (`.env`)
 
-- `MODEL_DIR` / `DRAFT_DIR` — target and speculative draft (`none` disables drafting)
-- `CONTEXT_SIZE` — KV cache size in tokens (native limit 262,144; 1M via the
-  YaRN config variant, see model card)
+- `MODEL_DIR` / `DRAFT_DIR` — target and speculative draft (`none` disables
+  drafting); missing dirs are fetched from the Hub automatically
+  (`HF_TARGET_REPO` / `HF_DRAFT_REPO` override the repo ids, `HF_TOKEN`
+  authenticates — repos are private)
+- `CONTEXT_SIZE` — KV cache size in tokens (native limit 262,144; 1M works and
+  the launcher swaps in the YaRN config variant automatically)
 - `CACHE_QUANT` — KV format: `none` (fp16) / `8` / `8,4` / `fp8` / `nvfp4`
   (~4.5 bits/elem, measured lossless at generation level)
 - `GPU_MEM_GB` — memory budget for weights + caches (110 on DGX Spark, ~22 on
