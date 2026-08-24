@@ -1,4 +1,4 @@
-# Qwen3.8-27B · EXL3 · DFlash2 — deployment kit
+# Qwen3.8-27B · EXL3 · DFlash2
 
 Private deployment kit for serving **Qwen3.8-27B** quantized to EXL3 3.5bpw
 with **DFlash2 speculative decoding** (EXL3 5.0bpw draft), including an
