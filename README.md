@@ -20,13 +20,19 @@ DFlash2/aarch64 support.
 ## Quick start
 
 ```bash
-# 1. install the exllamav3 fork (DFlash2 + aarch64 port) in a venv
-# 2. authenticate to Hugging Face (the weight repos are private):
+# 1. authenticate to Hugging Face (the weight repos are private):
 #    hf auth login     (or put HF_TOKEN=... in .env — see below)
-# 3. configure and launch:
+# 2. configure and launch:
 cp .env.example .env      # edit: context, GPU memory, HF_TOKEN
-./start.sh                # auto-downloads weights, serves http://localhost:8888/v1
+./start.sh                # first run: builds .venv + installs the engine,
+                          # downloads weights, serves http://localhost:8888/v1
 ```
+
+`start.sh` is self-bootstrapping: on first run it creates `.venv` and
+pip-installs the exllamav3 engine (GPU torch from the PyTorch index, engine
+and server deps). Set `EXL3_REPO` in `.env` to install a fork instead of
+upstream — required on DGX Spark/aarch64, and for NVFP4 KV / DFlash2
+drafting.
 
 Running on a 24 GB GPU (RTX 3090/4090)? Jump to
 [24 GB config](#24-gb-gpus-rtx-3090--4090).

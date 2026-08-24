@@ -13,11 +13,32 @@ fi
 # shellcheck disable=SC1091
 source .env
 
-# Prefer the repo's venv if present
-PYTHON="${PYTHON:-python3}"
-if [ -x .venv/bin/python ]; then
-    PYTHON=.venv/bin/python
+# --- bootstrap: build the venv + install the engine on first run ----------
+# New users have no .venv; this creates it and installs everything.
+if [ ! -x .venv/bin/python ]; then
+    echo "First run: creating .venv and installing the exllamav3 engine …"
+    python3 -m venv .venv
+    .venv/bin/pip install --quiet --upgrade pip
+    # GPU torch straight from the PyTorch index (PyPI's torch is CPU-only).
+    .venv/bin/pip install --quiet --no-deps torch \
+        --index-url "${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu130}"
+    # The engine itself; its requirements.txt supplies the rest of the deps.
+    # Default = upstream exllamav3 (x86 CUDA). The DFlash2/aarch64 fork goes
+    # here — set EXL3_REPO in .env (git+https://… or a local path).
+    # --no-build-isolation + the env vars below compile the native ext at
+    # install time (aarch64/GB10 recipe; override via .env as needed).
+    export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-12.0;12.1}"
+    export CUDA_HOME="${CUDA_HOME:-/usr/local/cuda}"
+    export MAX_JOBS="${MAX_JOBS:-4}"
+    .venv/bin/pip install --quiet --no-build-isolation \
+        "${EXL3_REPO:-git+https://github.com/turboderp-org/exllamav3}"
+    .venv/bin/pip install --quiet aiohttp huggingface_hub
+    echo "Engine installed."
 fi
+
+PYTHON=.venv/bin/python
+# venv tools (ninja, …) must stay findable for the engine's JIT fallback.
+export PATH="$(pwd)/.venv/bin:$PATH"
 
 MODEL_DIR="${MODEL_DIR:?MODEL_DIR must be set in .env}"
 PORT="${PORT:-8888}"
