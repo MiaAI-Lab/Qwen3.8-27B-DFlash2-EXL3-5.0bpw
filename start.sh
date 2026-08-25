@@ -39,6 +39,11 @@ if [ ! -x .venv/bin/python ] \
     fi
     export CUDA_HOME="${CUDA_HOME:-/usr/local/cuda}"
     export MAX_JOBS="${MAX_JOBS:-4}"
+    # Fail fast (clear error) instead of hanging if the engine repo needs
+    # auth (GIT_ASKPASS: proven on git 2.43 where GIT_TERMINAL_PROMPTS
+    # alone does not suppress the credential prompt).
+    export GIT_TERMINAL_PROMPTS=0
+    export GIT_ASKPASS=/bin/true
     .venv/bin/pip install --quiet --no-build-isolation \
         "${EXL3_REPO:-git+https://github.com/MiaAI-Lab/exllamav3}"
     .venv/bin/pip install --quiet aiohttp huggingface_hub
