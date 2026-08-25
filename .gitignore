@@ -1,3 +1,5 @@
 .env
 .venv/
 models/
+# runtime: server conversation log
+jobs.jsonl
