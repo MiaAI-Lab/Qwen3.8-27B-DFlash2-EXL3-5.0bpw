@@ -14,9 +14,11 @@ fi
 source .env
 
 # --- bootstrap: build the venv + install the engine on first run ----------
-# New users have no .venv; this creates it and installs everything.
-if [ ! -x .venv/bin/python ]; then
-    echo "First run: creating .venv and installing the exllamav3 engine …"
+# Re-enters if the venv is missing OR the install is incomplete (e.g. a
+# Ctrl-C during the first run left a half-installed venv) — pip is idempotent.
+if [ ! -x .venv/bin/python ] \
+   || ! .venv/bin/python -c "import torch, exllamav3, aiohttp, huggingface_hub" 2>/dev/null; then
+    echo "Setting up .venv and installing the exllamav3 engine …"
     python3 -m venv .venv
     .venv/bin/pip install --quiet --upgrade pip setuptools wheel typing_extensions packaging
     # GPU torch + its NVIDIA runtime deps; PyPI stays primary so the
@@ -102,6 +104,8 @@ if [ "$CACHE_QUANT" != "none" ]; then
 fi
 if [ "$DRAFT_DIR" != "none" ]; then
     cmd+=(--draft_model "$DRAFT_DIR")
+else
+    cmd+=(--draft_model none)   # skip the server's built-in default draft path
 fi
 if [ "$CPU_CACHE_GB" != "0" ]; then
     cmd+=(--cpu_cache_size "$CPU_CACHE_GB")
