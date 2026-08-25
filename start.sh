@@ -13,6 +13,10 @@ fi
 # shellcheck disable=SC1091
 source .env
 
+# .env is sourced as shell vars; the model-download subprocess needs the HF
+# token in its environment, so export it if set.
+if [ -n "${HF_TOKEN:-}" ]; then export HF_TOKEN; fi
+
 # --- bootstrap: build the venv + install the engine on first run ----------
 # Re-enters if the venv is missing OR the install is incomplete (e.g. a
 # Ctrl-C during the first run left a half-installed venv) — pip is idempotent.
