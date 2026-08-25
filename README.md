@@ -1,8 +1,9 @@
-# Qwen3.8-27B · EXL3 · DFlash2
+# Qwen3.8-27B · EXL3 · Speculative Decoding
 
 Private deployment kit for serving **Qwen3.8-27B** quantized to EXL3 3.5bpw
-with **DFlash2 speculative decoding** (EXL3 5.0bpw draft), including an
-NVFP4 KV cache lane for maximum context per GB.
+with speculative decoding — **MTP by default** (draft head inside the
+checkpoint, best context per GB) or **DFlash2** (EXL3 5.0bpw draft model,
+~15% faster) — plus an NVFP4 KV cache lane for maximum context per GB.
 
 This repo contains the launcher and configuration. The model weights live on
 Hugging Face (see [Model cards](#model-cards)) and the inference engine is
@@ -45,8 +46,11 @@ downloads) — no manual fetching. Set `HF_TARGET_REPO` / `HF_DRAFT_REPO` in
 
 ## Configuration highlights (`.env`)
 
-- `MODEL_DIR` / `DRAFT_DIR` — target and speculative draft (`none` disables
-  drafting); missing dirs are fetched from the Hub automatically
+- `DRAFT` — speculative decoding method: `mtp` (default; the draft head
+  lives inside the target checkpoint — no download, ~50% more context on
+  small GPUs), `dflash2` (dedicated draft model, fastest tokens/s), or
+  `none`. `MODEL_DIR` / `DRAFT_DIR` set the target and (for dflash2) draft
+  locations; missing dirs are fetched from the Hub automatically
   (`HF_TARGET_REPO` / `HF_DRAFT_REPO` override the repo ids, `HF_TOKEN`
   authenticates — repos are private)
 - `CONTEXT_SIZE` — KV cache size in tokens (native limit 262,144; 1M works and

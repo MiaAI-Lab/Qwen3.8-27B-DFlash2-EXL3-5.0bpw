@@ -38,7 +38,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from aiohttp import web
 
 MODEL_DIR = "test_models/Qwen3.8-27B-exl3-3.5bpw-wm"
-DRAFT_DIR = "test_models/Qwen3.8-27B-exl3-3.5bpw-wm/draft-dflash2"
+DRAFT_DIR = "mtp"   # default drafting method: MTP head (no external draft model)
 PORT = 8888
 
 gen_lock = threading.Lock()          # serialize generation (batch-1 draft)

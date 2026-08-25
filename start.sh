@@ -140,7 +140,10 @@ CPU_CACHE_GB="${CPU_CACHE_GB:-0}"
 # DRAFT_DIR=none (= explicit no-draft) also keeps working.
 DRAFT="${DRAFT:-}"
 if [ -z "$DRAFT" ]; then
-    if [ "${DRAFT_DIR:-}" = "none" ]; then DRAFT=none; else DRAFT=dflash2; fi
+    if [ "${DRAFT_DIR:-}" = "none" ]; then DRAFT=none
+    elif [ -n "${DRAFT_DIR:-}" ]; then DRAFT=dflash2    # legacy: explicit draft path
+    else DRAFT=mtp                                       # default: MTP head, best context/GB
+    fi
 fi
 DRAFT="$(echo "$DRAFT" | tr '[:upper:]' '[:lower:]')"
 
