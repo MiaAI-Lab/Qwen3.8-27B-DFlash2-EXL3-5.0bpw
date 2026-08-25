@@ -27,6 +27,12 @@ block-diffusion speculative-decoding drafter (original bf16 release:
 This is **not a standalone language model**. It drafts token blocks for the
 Qwen3.8-27B target to verify, inside a speculative-decoding engine:
 
+> **Which drafter?** The target checkpoint ships its own MTP draft head — no
+> download, ~20% less KV per token, the max-context option (see the
+> [target model](https://huggingface.co/Mia-AiLab/Qwen3.8-27B-EXL3-3.5bpw)).
+> This DFlash2 draft is the max-tokens/s option: ~+15% faster than MTP on the
+> same hardware, at the cost of its 1.4 GB weights and draft KV cache.
+
 - drafts a whole block (up to 7 speculative tokens, `block_size: 8`) in one pass
 - keeps top candidates at every position; a lightweight selector traces one
   coherent path through them

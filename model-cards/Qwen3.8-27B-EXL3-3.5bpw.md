@@ -17,7 +17,8 @@ tags:
 EXL3 quantization of [Qwen/Qwen3.8-27B](https://huggingface.co/Qwen/Qwen3.8-27B),
 the hybrid linear-attention / full-attention (gated-deltanet + full-attn) dense
 27B model. **14.2 GB** of weights — sized to leave room for large KV caches on
-24 GB GPUs while serving ~220k tokens of context (see [Memory & context](#memory--context)).
+24 GB GPUs: with the built-in MTP draft head the full native 262k context fits
+fully resident (see [Memory & context](#memory--context)).
 
 The conversion was calibrated on a **workload-matched, self-generated trace**
 (622k tokens of coding + math reasoning sampled from this model family) instead
@@ -40,8 +41,8 @@ behavior than the generic-calibration build of the same bpw.
 ## Requirements
 
 - [exllamav3](https://github.com/turboderp-org/exllamav3) — the `qwen3_5`
-  architecture used here is supported upstream; no fork required for basic
-  inference on x86 CUDA GPUs.
+  architecture used here is supported upstream, including MTP speculative
+  decoding; no fork required for basic inference on x86 CUDA GPUs.
 - On **DGX Spark / GB10 (aarch64)** you need the aarch64 port of exllamav3
   (upstream is x86-only at time of writing).
 - FP8/NVFP4 KV cache and DFlash2/DSpark speculative decoding (below) require
@@ -92,9 +93,10 @@ features of the exllamav3 fork this model was benchmarked with. NVFP4 KV was
 verified lossless-in-the-noise at generation level (acceptance and quality
 gates unchanged vs fp16 KV; E2M1 cos-sim vs fp16 KV 0.99995).
 
-**24 GB GPU recipe:** these weights (14.2 GB) + NVFP4 KV + the 5bpw EXL3
-DFlash2 draft (1.4 GB) ≈ **220k tokens fully resident**; ~290k with a 3.0bpw
-build of the same recipe.
+**24 GB GPU recipe:** these weights (14.2 GB) + the built-in MTP head + NVFP4
+KV ≈ the **full native 262k context fully resident**; with the DFlash2 draft
+(1.4 GB) instead ≈ 220k tokens. A 3.0bpw build of the same recipe reaches
+~290k.
 
 ## Long context (YaRN 1M)
 
@@ -108,11 +110,28 @@ native 262k) fail. This is position-level YaRN behavior — identical with fp16
 and NVFP4 KV caches — so treat 262k as the quality-faithful limit and 1M as
 best-effort headroom.
 
-## Speculative decoding (DFlash2)
+## Speculative decoding
+
+Two drafting options, both verified with this exact weight set:
+
+### MTP — built into this checkpoint (best context)
+
+The checkpoint ships Qwen3.8's multi-token-prediction head (~50 MB, 4-bit
+quantized). Drafting with it needs **no download and no extra weights in
+VRAM**, and skips a separate draft model's KV cache (~20% less KV per token
+than an external drafter) — on a 24 GB card the full native 262k context fits
+fully resident. Support is upstream exllamav3 (`--mtp` in `model_init`;
+`DRAFT=mtp` in the serving kit).
+
+Measured on DGX Spark (GB10): ~2.2 accepted tokens/step, ~30 tok/s
+(HumanEval-class, T = 0.6).
+
+### DFlash2 — companion draft model (fastest)
 
 A companion EXL3 quant of the DFlash2 block-diffusion draft model exists:
-[`Mia-AiLab/Qwen3.8-27B-DFlash2-EXL3-5.0bpw`](https://huggingface.co/Mia-AiLab/Qwen3.8-27B-DFlash2-EXL3-5.0bpw).
-With it, measured on DGX Spark (GB10, 273 GB/s-class LPDDR5x):
+[`Mia-AiLab/Qwen3.8-27B-DFlash2-EXL3-5.0bpw`](https://huggingface.co/Mia-AiLab/Qwen3.8-27B-DFlash2-EXL3-5.0bpw)
+(~+15% tokens/s vs MTP, at the cost of 1.4 GB of draft weights and its KV
+cache). With it, measured on DGX Spark (GB10, 273 GB/s-class LPDDR5x):
 
 | workload (T = 0.6) | accepted tokens/step | tok/s |
 |---|---|---|
