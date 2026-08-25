@@ -48,8 +48,9 @@ if [ ! -x .venv/bin/python ] \
             "$@" >>"$BOOT_LOG" 2>&1 &
             local pid=$! i=0 spin='-\|/'
             while kill -0 "$pid" 2>/dev/null; do
-                printf '\r  [%s] %s … %s   ' "${spin:$((i % 4)):1}" "$label" \
-                    "$(_elapsed $((SECONDS - t0)))"
+                prog=$(grep -oE '^\[[0-9]+/[0-9]+\]' "$BOOT_LOG" 2>/dev/null | tail -1 || true)
+                printf '\r  [%s] %s … %s %s   ' "${spin:$((i % 4)):1}" "$label" \
+                    "${prog:+$prog }" "$(_elapsed $((SECONDS - t0)))"
                 i=$((i + 1)); sleep 0.25
             done
             if wait "$pid"; then
@@ -91,14 +92,16 @@ if [ ! -x .venv/bin/python ] \
         export TORCH_CUDA_ARCH_LIST="12.0;12.1"
     fi
     export CUDA_HOME="${CUDA_HOME:-/usr/local/cuda}"
-    export MAX_JOBS="${MAX_JOBS:-4}"
+    # 8 parallel nvcc jobs when the machine can take it (halves wall time on
+    # many-core boxes); 4 otherwise. Override in .env if needed.
+    export MAX_JOBS="${MAX_JOBS:-$(( $(nproc) >= 8 && $(free -g | awk '/^Mem:/{print $2}') >= 32 ? 8 : 4 ))}"
     # Fail fast (clear error) instead of hanging if the engine repo needs
     # auth (GIT_ASKPASS: proven on git 2.43 where GIT_TERMINAL_PROMPTS
     # alone does not suppress the credential prompt).
     export GIT_TERMINAL_PROMPTS=0
     export GIT_ASKPASS=/bin/true
-    _quiet_step "4/5 exllamav3 engine — clone + compile CUDA kernels (3–5 min)" \
-        .venv/bin/pip install --quiet --no-build-isolation \
+    _quiet_step "4/5 exllamav3 engine — clone + compile CUDA kernels (5–20 min depending on machine)" \
+        .venv/bin/pip install --no-build-isolation \
             "${EXL3_REPO:-git+https://github.com/MiaAI-Lab/exllamav3}"
     _quiet_step "5/5 server dependencies (aiohttp, huggingface_hub)" \
         .venv/bin/pip install --quiet aiohttp huggingface_hub
