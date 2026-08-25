@@ -132,8 +132,17 @@ else
     echo "GPU_MEM_GB not set — auto-detected budget: ${GPU_MEM_GB} GB (override in .env)"
 fi
 CACHE_QUANT="${CACHE_QUANT:-none}"
-DRAFT_DIR="${DRAFT_DIR:-none}"
 CPU_CACHE_GB="${CPU_CACHE_GB:-0}"
+
+# --- speculative decoding method ---------------------------------------------
+# DRAFT = mtp | dflash2 | none (see .env.example for the trade-offs).
+# Legacy: DRAFT_DIR set to a path keeps working (= dflash2 with that path);
+# DRAFT_DIR=none (= explicit no-draft) also keeps working.
+DRAFT="${DRAFT:-}"
+if [ -z "$DRAFT" ]; then
+    if [ "${DRAFT_DIR:-}" = "none" ]; then DRAFT=none; else DRAFT=dflash2; fi
+fi
+DRAFT="$(echo "$DRAFT" | tr '[:upper:]' '[:lower:]')"
 
 # --- auto-download from the Hub if missing --------------------
 # Repos are private: put HF_TOKEN=<token> in .env, or `hf auth login`.
@@ -157,9 +166,24 @@ PYEOF
 }
 
 dl_model "$HF_TARGET_REPO" "$MODEL_DIR" "target model"
-if [ "$DRAFT_DIR" != "none" ]; then
-    dl_model "$HF_DRAFT_REPO" "$DRAFT_DIR" "DFlash2 draft"
-fi
+
+case "$DRAFT" in
+    mtp)
+        # MTP head lives inside the target checkpoint — nothing to download.
+        ;;
+    dflash2)
+        if [ -z "${DRAFT_DIR:-}" ] || [ "$DRAFT_DIR" = "none" ]; then
+            DRAFT_DIR="models/Qwen3.8-27B-DFlash2-EXL3-5.0bpw"
+        fi
+        dl_model "$HF_DRAFT_REPO" "$DRAFT_DIR" "DFlash2 draft"
+        ;;
+    none)
+        ;;
+    *)
+        echo "DRAFT must be mtp, dflash2, or none (got: $DRAFT)" >&2
+        exit 1
+        ;;
+esac
 
 # Context beyond the native 262144 needs the YaRN config variant.
 if [ "$CONTEXT_SIZE" -gt 262144 ] \
@@ -179,11 +203,11 @@ cmd=("$PYTHON" -u tools/serve_openai.py
 if [ "$CACHE_QUANT" != "none" ]; then
     cmd+=(--cache_quant "$CACHE_QUANT")
 fi
-if [ "$DRAFT_DIR" != "none" ]; then
-    cmd+=(--draft_model "$DRAFT_DIR")
-else
-    cmd+=(--draft_model none)   # skip the server's built-in default draft path
-fi
+case "$DRAFT" in
+    mtp)      cmd+=(--draft_model mtp) ;;
+    dflash2)  cmd+=(--draft_model "$DRAFT_DIR") ;;
+    none)     cmd+=(--draft_model none) ;;   # skip the server's built-in default draft path
+esac
 if [ "$CPU_CACHE_GB" != "0" ]; then
     cmd+=(--cpu_cache_size "$CPU_CACHE_GB")
 fi

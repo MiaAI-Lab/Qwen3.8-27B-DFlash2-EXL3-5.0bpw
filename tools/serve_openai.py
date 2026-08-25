@@ -101,7 +101,9 @@ def build_model(argv, use_draft = True):
         generator = Generator(
             model, cache, tokenizer,
             draft_model = draft_model, draft_cache = draft_cache,
-            num_draft_tokens = 7,
+            # num_draft_tokens defaults to the draft model's arch-declared
+            # default_draft_size (DFlash2: block_size - 1 = 7, MTP: 4). Must
+            # match model_init's max_history sizing, which reads the same caps.
         )
     else:
         model, config, cache, tokenizer = model_init.init(args, progress = True)
@@ -561,7 +563,10 @@ def main():
     global MODEL_DIR, DRAFT_DIR, PORT
     ap = argparse.ArgumentParser()
     ap.add_argument("-m", "--model", default = MODEL_DIR)
-    ap.add_argument("-dm", "--draft_model", default = DRAFT_DIR)
+    ap.add_argument("-dm", "--draft_model", default = DRAFT_DIR,
+                    help = "Draft model path, 'mtp' for MTP drafting (head inside the "
+                           "main checkpoint: no extra weights, much smaller KV footprint) "
+                           "or 'none' to disable drafting")
     ap.add_argument("-gs", "--grid_size", type = int, default = 110)
     ap.add_argument("-cs", "--cache_size", type = int, default = 65536,
                     help = "KV cache size in tokens (default 65536; 8192 default "
@@ -575,10 +580,14 @@ def main():
                     help = "CPU second-tier cache size in GB (pages spill from "
                            "GPU when the GPU cache is full)")
     args = ap.parse_args()
-    use_draft = args.draft_model.lower() not in ("none", "", "-")
+    _draft = args.draft_model.lower()
+    use_mtp = _draft == "mtp"
+    use_draft = _draft not in ("none", "", "-")
     argv = ["-m", args.model,
             "-gs", str(args.grid_size), "-cs", str(args.cache_size)]
-    if use_draft:
+    if use_mtp:
+        argv += ["-mtp"]
+    elif use_draft:
         argv += ["-dm", args.draft_model]
     if args.cache_quant:
         argv += ["-cq", args.cache_quant]
@@ -586,7 +595,8 @@ def main():
         argv += ["-ccs", str(args.cpu_cache_size)]
 
     print(f" == loading {args.model}"
-          + (f" + draft {args.draft_model}" if use_draft else " (no draft)")
+          + (" + MTP head" if use_mtp else
+             (f" + draft {args.draft_model}" if use_draft else " (no draft)"))
           + " ...", flush = True)
     generator, tokenizer = build_model(argv, use_draft = use_draft)
     stats["context_length"] = int(args.cache_size)
