@@ -75,6 +75,22 @@ HOLD_BACK = 16                       # marker-safe holdback for streamed text
 
 def build_model(argv, use_draft = True):
     from argparse import ArgumentParser
+
+    # The one-time JIT build of the CUDA extension can look like a hang;
+    # say so before the import below blocks on it.
+    try:
+        import importlib.util, os
+        if importlib.util.find_spec("exllamav3_ext") is None:
+            _root = os.environ.get("TORCH_EXTENSIONS_DIR",
+                                   os.path.expanduser("~/.cache/torch_extensions"))
+            if not (os.path.isdir(_root) and
+                    any(d == "exllamav3_ext"
+                        for _, _dirs, _ in os.walk(_root) for d in _dirs)):
+                print(" == compiling the CUDA extension "
+                      "(one-time; a few minutes of silence is normal) ...", flush = True)
+    except Exception:
+        pass
+
     from exllamav3 import model_init, Generator
     parser = ArgumentParser()
     model_init.add_args(parser, add_draft_model_args = use_draft)

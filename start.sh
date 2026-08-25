@@ -18,13 +18,62 @@ source .env
 # Ctrl-C during the first run left a half-installed venv) — pip is idempotent.
 if [ ! -x .venv/bin/python ] \
    || ! .venv/bin/python -c "import torch, exllamav3, aiohttp, huggingface_hub" 2>/dev/null; then
-    echo "Setting up .venv and installing the exllamav3 engine …"
-    python3 -m venv .venv
-    .venv/bin/pip install --quiet --upgrade pip setuptools wheel typing_extensions packaging
+    echo "First-run setup — one time only (later runs skip straight to the model):"
+    BOOT_LOG="$(mktemp /tmp/exl3_setup.XXXXXX.log)"
+
+    _elapsed() { printf '%dm%02ds' $(($1 / 60)) $(($1 % 60)); }
+
+    # Step whose own output is useful (pip download bars): run in foreground.
+    _step() {   # _step "label" cmd [args…]
+        local label="$1" t0=$SECONDS; shift
+        echo "  [ .. ] $label"
+        if "$@"; then
+            echo "  [ ok ] $label ($(_elapsed $((SECONDS - t0))))"
+        else
+            echo "  [FAIL] $label — after $(_elapsed $((SECONDS - t0)))"
+            return 1
+        fi
+    }
+
+    # Long silent step (CUDA compile): spinner + live timer on a terminal,
+    # plain lines when piped; output captured, tail shown on failure.
+    _quiet_step() {   # _quiet_step "label" cmd [args…]
+        local label="$1" t0=$SECONDS; shift
+        : > "$BOOT_LOG"
+        if [ -t 1 ]; then
+            "$@" >>"$BOOT_LOG" 2>&1 &
+            local pid=$! i=0 spin='-\|/'
+            while kill -0 "$pid" 2>/dev/null; do
+                printf '\r  [%s] %s … %s   ' "${spin:$((i % 4)):1}" "$label" \
+                    "$(_elapsed $((SECONDS - t0)))"
+                i=$((i + 1)); sleep 0.25
+            done
+            if wait "$pid"; then
+                printf '\r\033[K  [ ok ] %s (%s)\n' "$label" "$(_elapsed $((SECONDS - t0)))"
+                return 0
+            fi
+        else
+            echo "  [ .. ] $label"
+            if "$@" >>"$BOOT_LOG" 2>&1; then
+                echo "  [ ok ] $label ($(_elapsed $((SECONDS - t0))))"
+                return 0
+            fi
+        fi
+        printf '\r\033[K  [FAIL] %s — after %s\n' "$label" "$(_elapsed $((SECONDS - t0)))"
+        echo "  ---- last output (full log: $BOOT_LOG) ----"
+        tail -n 20 "$BOOT_LOG" | sed 's/^/  | /'
+        return 1
+    }
+
+    _step "1/5 creating Python virtualenv" python3 -m venv .venv
+    _quiet_step "2/5 build tools (pip, setuptools, wheel)" \
+        .venv/bin/pip install --quiet --upgrade pip setuptools wheel typing_extensions packaging
     # GPU torch + its NVIDIA runtime deps; PyPI stays primary so the
     # nvidia-* runtime wheels resolve too (cu130 local-version wheel wins).
-    .venv/bin/pip install --quiet torch \
-        --extra-index-url "${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu130}"
+    # Output NOT hidden: pip's own download progress bars show here.
+    _step "3/5 PyTorch (~2–3 GB download the first time)" \
+        .venv/bin/pip install torch \
+            --extra-index-url "${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu130}"
     # The engine itself; its requirements.txt supplies the rest of the deps.
     # Default = the MiaAI-Lab fork (DFlash2 drafting, NVFP4/FP8 KV, aarch64
     # GB10 + x86 CUDA). EXL3_REPO in .env overrides (git+https://… or a
@@ -44,10 +93,12 @@ if [ ! -x .venv/bin/python ] \
     # alone does not suppress the credential prompt).
     export GIT_TERMINAL_PROMPTS=0
     export GIT_ASKPASS=/bin/true
-    .venv/bin/pip install --quiet --no-build-isolation \
-        "${EXL3_REPO:-git+https://github.com/MiaAI-Lab/exllamav3}"
-    .venv/bin/pip install --quiet aiohttp huggingface_hub
-    echo "Engine installed."
+    _quiet_step "4/5 exllamav3 engine — clone + compile CUDA kernels (3–5 min)" \
+        .venv/bin/pip install --quiet --no-build-isolation \
+            "${EXL3_REPO:-git+https://github.com/MiaAI-Lab/exllamav3}"
+    _quiet_step "5/5 server dependencies (aiohttp, huggingface_hub)" \
+        .venv/bin/pip install --quiet aiohttp huggingface_hub
+    echo "Setup complete."
 fi
 
 PYTHON=.venv/bin/python
