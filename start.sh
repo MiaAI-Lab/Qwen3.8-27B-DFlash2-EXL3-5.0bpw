@@ -116,7 +116,21 @@ MODEL_DIR="${MODEL_DIR:?MODEL_DIR must be set in .env}"
 PORT="${PORT:-8888}"
 HOST="${HOST:-0.0.0.0}"
 CONTEXT_SIZE="${CONTEXT_SIZE:-65536}"
-GPU_MEM_GB="${GPU_MEM_GB:-110}"
+if [ -n "${GPU_MEM_GB:-}" ]; then
+    echo "GPU memory budget: ${GPU_MEM_GB} GB (from .env)"
+else
+    _vram=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1) || true
+    if [ "${_vram:-0}" -gt 0 ] 2>/dev/null; then
+        # discrete GPU: VRAM minus a little headroom (e.g. 24 GB card -> 22)
+        GPU_MEM_GB=$(( _vram / 1024 - 2 ))
+    else
+        # GB10/unified memory (nvidia-smi reports no total): available system
+        # RAM minus a reserve for the OS and anything else on the box
+        GPU_MEM_GB=$(( $(free -g | awk '/^Mem:/{print $7}') - 16 ))
+    fi
+    if [ "$GPU_MEM_GB" -lt 8 ]; then GPU_MEM_GB=8; fi
+    echo "GPU_MEM_GB not set — auto-detected budget: ${GPU_MEM_GB} GB (override in .env)"
+fi
 CACHE_QUANT="${CACHE_QUANT:-none}"
 DRAFT_DIR="${DRAFT_DIR:-none}"
 CPU_CACHE_GB="${CPU_CACHE_GB:-0}"
