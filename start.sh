@@ -1,8 +1,19 @@
 #!/usr/bin/env bash
 # Start the OpenAI-compatible exllamav3 server (tools/serve_openai.py).
 # Configuration lives in .env — created from .env.example on first run.
+#
+# Works from the deployment kit or from the engine repo itself. First run
+# builds .venv, installs torch + the engine (compiling the CUDA kernels) +
+# server deps, then downloads the model weights from Hugging Face and serves.
+# Later runs start the server directly.
 set -euo pipefail
 cd "$(dirname "$0")"
+
+if [ ! -f tools/serve_openai.py ]; then
+    echo "start.sh must run from the deployment kit or the engine repo" >&2
+    echo "(tools/serve_openai.py not found next to it)." >&2
+    exit 1
+fi
 
 if [ ! -f .env ]; then
     cp .env.example .env
@@ -79,12 +90,21 @@ if [ ! -x .venv/bin/python ] \
     _step "3/5 PyTorch (~2–3 GB download the first time)" \
         .venv/bin/pip install torch \
             --extra-index-url "${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu130}"
-    # The engine itself; its requirements.txt supplies the rest of the deps.
-    # Default = the MiaAI-Lab fork (DFlash2 drafting, NVFP4/FP8 KV, aarch64
-    # GB10 + x86 CUDA). EXL3_REPO in .env overrides (git+https://… or a
-    # local path).
+    # The engine itself; its setup.py pulls in the rest of the deps.
+    # Inside the engine repo: build from the local checkout (EXL3_REPO is
+    # ignored there). Elsewhere (deployment kit): install from EXL3_REPO —
+    # default is the MiaAI-Lab fork (DFlash2/MTP drafting, NVFP4/FP8 KV,
+    # aarch64 GB10 + x86 CUDA); override in .env for a token URL (while
+    # the repos are private) or a local path.
     # --no-build-isolation + the env vars below compile the native ext at
     # install time (override via .env as needed).
+    if [ -f exllamav3/__init__.py ]; then
+        _engine_src="."
+        _engine_note="local engine repo — compiling CUDA kernels"
+    else
+        _engine_src="${EXL3_REPO:-git+https://github.com/MiaAI-Lab/exllamav3}"
+        _engine_note="exllamav3 engine — clone + compile CUDA kernels"
+    fi
     if [ -n "${TORCH_CUDA_ARCH_LIST:-}" ]; then
         export TORCH_CUDA_ARCH_LIST
     elif [ "$(uname -m)" = "aarch64" ]; then
@@ -100,9 +120,9 @@ if [ ! -x .venv/bin/python ] \
     # alone does not suppress the credential prompt).
     export GIT_TERMINAL_PROMPTS=0
     export GIT_ASKPASS=/bin/true
-    _quiet_step "4/5 exllamav3 engine — clone + compile CUDA kernels (5–20 min depending on machine)" \
+    _quiet_step "4/5 ${_engine_note} (5–20 min depending on machine)" \
         .venv/bin/pip install --no-build-isolation \
-            "${EXL3_REPO:-git+https://github.com/MiaAI-Lab/exllamav3}"
+            "${_engine_src}"
     _quiet_step "5/5 server dependencies (aiohttp, huggingface_hub)" \
         .venv/bin/pip install --quiet aiohttp huggingface_hub
     echo "Setup complete."

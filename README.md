@@ -5,10 +5,10 @@ with speculative decoding — **MTP by default** (draft head inside the
 checkpoint, best context per GB) or **DFlash2** (EXL3 5.0bpw draft model,
 ~15% faster) — plus an NVFP4 KV cache lane for maximum context per GB.
 
-This repo contains the launcher and configuration. The model weights live on
-Hugging Face (see [Model cards](#model-cards)) and the inference engine is
-the [exllamav3](https://github.com/turboderp-org/exllamav3) fork with
-DFlash2/aarch64 support.
+This repo contains the launcher, server and configuration. The model weights
+live on Hugging Face (see [Model cards](#model-cards)) and the inference
+engine is our [exllamav3 fork](https://github.com/MiaAI-Lab/exllamav3)
+(DFlash2/MTP drafting, NVFP4/FP8 KV, aarch64 GB10 + x86 CUDA).
 
 ## What's in the box
 
@@ -16,6 +16,7 @@ DFlash2/aarch64 support.
 |---|---|
 | `start.sh` | env-driven launcher for the OpenAI-compatible server |
 | `stop.sh` | stop the server (graceful shutdown, safe to re-run) |
+| `tools/serve_openai.py` | the server itself (chat completions, streaming, tool calling) |
 | `.env.example` | documented configuration knobs |
 | `model-cards/` | model cards for the two HF weight sets |
 
@@ -30,11 +31,12 @@ cp .env.example .env      # edit: context, GPU memory, HF_TOKEN
                           # downloads weights, serves http://localhost:8888/v1
 ```
 
-`start.sh` is self-bootstrapping: on first run it creates `.venv` and
-pip-installs the exllamav3 engine (GPU torch from the PyTorch index, engine
-and server deps). Set `EXL3_REPO` in `.env` to install a fork instead of
-upstream — required on DGX Spark/aarch64, and for NVFP4 KV / DFlash2
-drafting.
+`start.sh` is self-bootstrapping: on first run it creates `.venv`, installs
+GPU torch and pip-installs the exllamav3 engine from this fork (all of
+DFlash2/MTP drafting, NVFP4/FP8 KV and the aarch64 GB10 port are fork
+features). While the GitHub repos are private, set `EXL3_REPO` in `.env` to
+a token URL (`git+https://x-access-token:<PAT>@github.com/MiaAI-Lab/exllamav3`)
+so pip can reach it; it also accepts any other git URL or a local path.
 
 Running on a 24 GB GPU (RTX 3090/4090)? Jump to
 [24 GB config](#24-gb-gpus-rtx-3090--4090).
@@ -58,9 +60,10 @@ downloads) — no manual fetching. Set `HF_TARGET_REPO` / `HF_DRAFT_REPO` in
   the launcher swaps in the YaRN config variant automatically)
 - `CACHE_QUANT` — KV format: `none` (fp16) / `8` / `8,4` / `fp8` / `nvfp4`
   (~4.5 bits/elem, measured lossless at generation level)
-- `GPU_MEM_GB` — memory budget for weights + caches (110 on DGX Spark, ~22 on
-  a 24 GB GPU)
-- `CPU_CACHE_GB` — optional CPU second-tier cache; cold pages spill from GPU
+- `GPU_MEM_GB` — memory budget for weights + caches; auto-detected when unset
+  (discrete GPU: VRAM − 2 GB, unified/GB10: available RAM − 16 GB)
+- `CPU_CACHE_GB` — CPU second-tier cache knob (accepted but not yet active;
+  see the 24 GB notes)
 
 Concurrency note: the server generates one request at a time (batch-1
 speculative decoding); concurrent requests queue automatically.
@@ -68,23 +71,40 @@ speculative decoding); concurrent requests queue automatically.
 ## 24 GB GPUs (RTX 3090 / 4090)
 
 The kit targets DGX Spark (121 GB) by default. On a 24 GB card the recipe is
-the same weights, a tighter KV budget, and NVFP4 KV — the model card calls it
-"14.2 GB + 1.4 GB + NVFP4 ≈ 220k tokens fully resident".
+the same weights, a tighter KV budget, and NVFP4 KV. The default drafter
+(MTP) is the right choice here:
 
 ```bash
-# .env — 24 GB recipe
-GPU_MEM_GB=22            # weights + caches budget; 24 GB card, keep ~2 GB headroom
-CONTEXT_SIZE=220000      # see math below
+# .env — 24 GB recipe (MTP, the default)
+GPU_MEM_GB=22            # auto-detected when unset; explicit for clarity
+CONTEXT_SIZE=262144      # full native context fits (see math below)
 CACHE_QUANT=nvfp4        # required at this size; lossless at generation level (measured)
-DRAFT_DIR=models/Qwen3.8-27B-DFlash2-EXL3-5.0bpw
+# DRAFT=mtp is the default — no extra config, no draft download
+```
+
+- **`DRAFT=mtp` (default)**: no draft weights, ~20% less KV per token → the
+  full native 262k context fits fully resident, at ~30 tok/s (GB10; an RTX
+  card should be faster — decode is memory-bandwidth-bound).
+- **`DRAFT=dflash2`**: ~34.5 tok/s but 1.4 GB of draft weights + draft KV →
+  ~220k–262k tokens fully resident.
+
+```bash
+# .env — alternative: DFlash2 at 24 GB
+GPU_MEM_GB=22
+CONTEXT_SIZE=220000
+CACHE_QUANT=nvfp4
+DRAFT=dflash2
+DRAFT_DIR=models/Qwen3.8-27B-DFlash2-EXL3-5.0bpw   # auto-downloaded
 # CPU_CACHE_GB=16        # CPU spill tier: NOT YET ACTIVE (planned; see notes)
 ```
 
-Memory math: weights are 15.6 GB total (14.2 target + 1.4 draft), so a 22 GB
-budget leaves ~6 GB of KV. NVFP4 KV costs ~18 KB/token (only the 16
-full-attention layers hold a KV cache; fp16 is ~64 KB/token) → **~220k tokens
-to ~262k (the native limit) fully resident**. Past that the cache does not
-hold today; the CPU spill tier is planned but not yet implemented.
+Memory math (GiB): target weights 14.2 + MTP head ~0.05 → ~6.7 GB left for
+KV at a 22 GB budget; NVFP4 KV costs ~18 KB/token for the target plus ~1.2
+KB/token for the MTP head (only the 16 full-attention layers hold KV; fp16
+is ~64 KB/token) → the full native 262k fits with ~1 GB to spare. With the
+DFlash2 draft instead: 15.6 GiB of weights + ~24 KB/token → ~220k–262k.
+Past that the cache does not hold today; the CPU spill tier is planned but
+not yet implemented.
 
 RTX-class notes (vs the DGX Spark the numbers above were measured on):
 
@@ -104,8 +124,10 @@ RTX-class notes (vs the DGX Spark the numbers above were measured on):
 - **Use the fork on x86 too**: stock exllamav3 serves the model on CUDA, but
   NVFP4 KV and DFlash2 drafting are fork features; install the fork's x86 CUDA
   build.
-- Need more context than ~262k? `DRAFT_DIR=none` frees 1.4 GB (~+75k tokens),
-  at the cost of speculative decoding.
+- Need more context than ~262k? That requires the YaRN 1M config and more
+  memory than a 24 GB card has. `DRAFT=none` frees the draft memory too, but
+  gives up speculative decoding — `DRAFT=mtp` already dominates it on both
+  memory and speed.
 
 ## Model cards
 

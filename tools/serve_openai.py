@@ -2,36 +2,37 @@
 """
 Minimal OpenAI-compatible server for the EXL3 serving target.
 
-Drafter: DFlash2 by default (since 2026-08-24; see M4 addendum) —
-`draft-dflash2/` symlink into the wm bundle. DSpark stays selectable:
-`-dm test_models/Qwen3.8-27B-exl3-3.5bpw-wm/draft`. EXL3_DSPARK_CONF is
-ignored by DFlash2 (no knob).
+Drafter: MTP by default (`-dm mtp`; the draft head lives inside the target
+checkpoint). Alternatives: a DFlash2 draft model directory (`-dm <dir>`),
+or no drafting (`-dm none`). The start.sh launcher maps the .env `DRAFT`
+knob onto these.
 
 Endpoints:
   GET  /v1/models
   GET  /health
   POST /v1/chat/completions   (stream and non-stream, tool calling)
 
-Defaults match our serving convention: temperature 0.6, top-k 20, top-p 0.95,
+Defaults match the serving convention: temperature 0.6, top-k 20, top-p 0.95,
 thinking enabled (reasoning arrives inline in `<think>`), speculative
-draft active (drafter chosen via -dm, see header).
+drafting active (drafter chosen via -dm, see above).
 Concurrency: requests are serialized (batch-1 draft); concurrent callers queue.
 
 Tool calling (Qwen3.8 XML format):
   - `tools` (OpenAI function specs) are rendered by the model's HF chat template
-    (system "# Tools" section). `tool_choice` is accepted but not enforced
-    (template has no support for it).
+    (system "# Tools" section). `tool_choice` is accepted; required/specific
+    choices are enforced with an explicit system directive.
   - assistant history with `tool_calls` is re-rendered natively by the template
     (arguments are converted JSON-string -> dict, as the template expects).
   - `role:"tool"` messages render as `<tool_response>` blocks natively.
   - Model output `<tool_call><function=name><parameter=k>v</parameter>
     </function></tool_call>` is parsed back into OpenAI `tool_calls` objects;
     generation stops at `</tool_call>`, finish_reason = "tool_calls".
+  - Tool-call arguments are typed per the request's own JSON schemas
+    (integer/number/boolean/array/object), strings kept on mismatch.
 
 Launch (from repo root):
-  EXL3_DSPARK_CONF=0.2 .venv/bin/python tools/serve_openai.py \
-      -m test_models/Qwen3.8-27B-exl3-3.5bpw-wm \
-      -dm test_models/Qwen3.8-27B-exl3-3.5bpw-wm/draft -gs 110 --port 8888
+  .venv/bin/python tools/serve_openai.py \
+      -m models/Qwen3.8-27B-EXL3-3.5bpw -gs 22 -cs 262144 -cq nvfp4 --port 8888
 """
 import argparse, json, os, re, sys, time, threading, uuid
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -276,7 +277,8 @@ def tool_choice_directive(tool_choice, tools):
 
 
 def generate_full(generator, tokenizer, messages, max_tokens, temperature,
-                  top_p, top_k, seed, tools, tool_choice = None, on_text = None):
+                  top_p, top_k, seed, tools, tool_choice = None, stop = None,
+                  on_text = None):
     """Blocking generation; returns (text, tool_calls, finish, p_toks, o_toks,
     reasoning, content)."""
     schemas = build_tool_schemas(tools)
@@ -305,7 +307,7 @@ def generate_full(generator, tokenizer, messages, max_tokens, temperature,
         text = ""
         reason = "max_new_tokens"
         sampler = ComboSampler(temperature = temperature, top_k = top_k, top_p = top_p)
-        stop_conditions = ["<|im_end|>", tokenizer.eos_token_id]
+        stop_conditions = ["<|im_end|>", tokenizer.eos_token_id] + (stop or [])
         job = Job(input_ids = input_ids, max_new_tokens = max_tokens,
                   stop_conditions = stop_conditions,
                   sampler = sampler, seed = seed)
@@ -384,6 +386,11 @@ def parse_request(body):
     top_k = int(body.get("top_k", 20))
     seed = body.get("seed")
     tools = body.get("tools") or None
+    stop = body.get("stop")
+    if isinstance(stop, str):
+        stop = [stop]
+    elif not isinstance(stop, list):
+        stop = None
     return dict(
         messages = normalize_messages(messages),
         max_tokens = max_tokens, temperature = temperature,
@@ -391,6 +398,7 @@ def parse_request(body):
         seed = int(seed) if seed is not None else None,
         tools = tools,
         tool_choice = body.get("tool_choice"),
+        stop = stop,
         stream = bool(body.get("stream", False)),
         model_id = body.get("model", "qwen3.8-27b-exl3-3.5bpw-wm"),
     ), None
@@ -413,7 +421,7 @@ async def chat_completions(request):
             text, calls, finish, ptoks, otoks, reasoning, content = await asyncio.to_thread(
                 generate_full, generator, tokenizer, req["messages"],
                 req["max_tokens"], req["temperature"], req["top_p"], req["top_k"],
-                req["seed"], req["tools"], req["tool_choice"])
+                req["seed"], req["tools"], req["tool_choice"], req["stop"])
         except AssertionError as e:
             return web.json_response(
                 {"error": {"message": f"context/cache: {e}", "type": "invalid_request_error"}},
@@ -455,7 +463,7 @@ async def chat_completions(request):
                 text, calls, finish, ptoks, otoks, reasoning, content = generate_full(
                     generator, tokenizer, req["messages"], req["max_tokens"],
                     req["temperature"], req["top_p"], req["top_k"],
-                    req["seed"], req["tools"], req["tool_choice"],
+                    req["seed"], req["tools"], req["tool_choice"], req["stop"],
                     on_text = None if forced_choice else on_text)
                 loop.call_soon_threadsafe(queue.put_nowait,
                                           ("done", (calls, finish, reasoning, content)))
