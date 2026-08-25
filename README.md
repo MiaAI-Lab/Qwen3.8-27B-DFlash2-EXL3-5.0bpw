@@ -15,6 +15,7 @@ DFlash2/aarch64 support.
 | file | what |
 |---|---|
 | `start.sh` | env-driven launcher for the OpenAI-compatible server |
+| `stop.sh` | stop the server (graceful shutdown, safe to re-run) |
 | `.env.example` | documented configuration knobs |
 | `model-cards/` | model cards for the two HF weight sets |
 
