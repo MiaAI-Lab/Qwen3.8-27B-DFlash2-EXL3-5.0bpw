@@ -72,13 +72,14 @@ GPU_MEM_GB=22            # weights + caches budget; 24 GB card, keep ~2 GB headr
 CONTEXT_SIZE=220000      # see math below
 CACHE_QUANT=nvfp4        # required at this size; lossless at generation level (measured)
 DRAFT_DIR=models/Qwen3.8-27B-DFlash2-EXL3-5.0bpw
-CPU_CACHE_GB=16          # optional, see notes
+# CPU_CACHE_GB=16        # CPU spill tier: NOT YET ACTIVE (planned; see notes)
 ```
 
 Memory math: weights are 15.6 GB total (14.2 target + 1.4 draft), so a 22 GB
 budget leaves ~6 GB of KV. NVFP4 KV costs ~18 KB/token (only the 16
 full-attention layers hold a KV cache; fp16 is ~64 KB/token) → **~220k tokens
-to ~262k (the native limit) fully resident**. Past that, tokens spill to CPU.
+to ~262k (the native limit) fully resident**. Past that the cache does not
+hold today; the CPU spill tier is planned but not yet implemented.
 
 RTX-class notes (vs the DGX Spark the numbers above were measured on):
 
@@ -87,10 +88,10 @@ RTX-class notes (vs the DGX Spark the numbers above were measured on):
   a 3090/4090 reads the same weights from ~1 TB/s-class VRAM. Acceptance and
   quality are unchanged — only tok/s moves. Not yet benchmarked on RTX, treat
   the table in the model cards as the lower bound.
-- **CPU spill is actually useful here** (`CPU_CACHE_GB`): a desktop has
-  32–64 GB of system RAM. Cold pages spill over PCIe — slow to touch — but you
-  can set `CONTEXT_SIZE` past the resident limit and only rarely-visited
-  prompts pay the penalty.
+- **CPU spill (planned, `CPU_CACHE_GB`)**: once implemented (T6 follow-up),
+  a desktop's 32–64 GB of system RAM backs cold KV pages over PCIe — slow to
+  touch, but it converts the hard ~220k resident limit into a graceful
+  decline. Today the knob is accepted but inert.
 - **The 1M YaRN config does not fit**: 1M tokens of NVFP4 KV ≈ 19 GB on top of
   15.6 GB of weights. Only reachable with CPU spill, and 262k is the
   quality-faithful limit anyway — don't expect the 1M headroom to be useful

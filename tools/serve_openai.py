@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """
-Minimal OpenAI-compatible server for the EXL3 + DSpark serving target.
+Minimal OpenAI-compatible server for the EXL3 serving target.
+
+Drafter: DFlash2 by default (since 2026-08-24; see M4 addendum) —
+`draft-dflash2/` symlink into the wm bundle. DSpark stays selectable:
+`-dm test_models/Qwen3.8-27B-exl3-3.5bpw-wm/draft`. EXL3_DSPARK_CONF is
+ignored by DFlash2 (no knob).
 
 Endpoints:
   GET  /v1/models
@@ -8,7 +13,8 @@ Endpoints:
   POST /v1/chat/completions   (stream and non-stream, tool calling)
 
 Defaults match our serving convention: temperature 0.6, top-k 20, top-p 0.95,
-thinking enabled (reasoning arrives inline in `<think>`), DSpark draft active.
+thinking enabled (reasoning arrives inline in `<think>`), speculative
+draft active (drafter chosen via -dm, see header).
 Concurrency: requests are serialized (batch-1 draft); concurrent callers queue.
 
 Tool calling (Qwen3.8 XML format):
@@ -32,7 +38,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from aiohttp import web
 
 MODEL_DIR = "test_models/Qwen3.8-27B-exl3-3.5bpw-wm"
-DRAFT_DIR = "test_models/Qwen3.8-27B-exl3-3.5bpw-wm/draft"
+DRAFT_DIR = "test_models/Qwen3.8-27B-exl3-3.5bpw-wm/draft-dflash2"
 PORT = 8888
 
 gen_lock = threading.Lock()          # serialize generation (batch-1 draft)
@@ -67,19 +73,23 @@ TOOL_CALL_CLOSE = "</tool_call>"
 HOLD_BACK = 16                       # marker-safe holdback for streamed text
 
 
-def build_model(argv):
+def build_model(argv, use_draft = True):
     from argparse import ArgumentParser
     from exllamav3 import model_init, Generator
     parser = ArgumentParser()
-    model_init.add_args(parser, add_draft_model_args = True)
+    model_init.add_args(parser, add_draft_model_args = use_draft)
     args = parser.parse_args(argv)
-    model, config, cache, tokenizer, draft_model, draft_config, draft_cache = \
-        model_init.init(args, progress = True)
-    generator = Generator(
-        model, cache, tokenizer,
-        draft_model = draft_model, draft_cache = draft_cache,
-        num_draft_tokens = 7,
-    )
+    if use_draft:
+        model, config, cache, tokenizer, draft_model, draft_config, draft_cache = \
+            model_init.init(args, progress = True)
+        generator = Generator(
+            model, cache, tokenizer,
+            draft_model = draft_model, draft_cache = draft_cache,
+            num_draft_tokens = 7,
+        )
+    else:
+        model, config, cache, tokenizer = model_init.init(args, progress = True)
+        generator = Generator(model, cache, tokenizer)
     return generator, tokenizer
 
 
@@ -119,7 +129,72 @@ def split_reasoning(text):
     return "", text
 
 
-def parse_tool_calls(text):
+def build_tool_schemas(tools):
+    """OpenAI tools list -> {function_name: {param_name: json-schema type}}."""
+    schemas = {}
+    for t in tools or []:
+        fn = (t or {}).get("function") or {}
+        name = fn.get("name")
+        props = ((fn.get("parameters") or {}).get("properties")) or {}
+        if name and isinstance(props, dict):
+            schemas[name] = {k: v.get("type") for k, v in props.items()
+                             if isinstance(v, dict)}
+    return schemas
+
+
+def _coerce_value(value, jtype):
+    """Coerce one XML string parameter to the schema-declared JSON type.
+    Lossless: on any mismatch the original string is returned unchanged."""
+    v = value.strip()
+    if not v:
+        return value
+    try:
+        if jtype == "integer":
+            return int(v)
+        if jtype == "number":
+            try:
+                return int(v)
+            except ValueError:
+                return float(v)
+        if jtype == "boolean":
+            if v.lower() == "true": return True
+            if v.lower() == "false": return False
+        if jtype == "array":
+            parsed = json.loads(v)
+            if isinstance(parsed, list):
+                return parsed
+        if jtype == "object":
+            parsed = json.loads(v)
+            if isinstance(parsed, dict):
+                return parsed
+    except (ValueError, json.JSONDecodeError):
+        pass
+    return value
+
+
+def coerce_tool_args(args, fn_schema):
+    """Qwen's XML tool format delivers every parameter value as a string;
+    OpenAI tool_calls arguments are typed JSON. Coerce each value using the
+    request's own tool schema; undeclared params and failed coercions keep
+    the raw string."""
+    if not fn_schema:
+        return args
+    out = {}
+    for k, v in args.items():
+        t = fn_schema.get(k)
+        types = t if isinstance(t, list) else [t]
+        for tt in types:
+            if isinstance(tt, str) and tt in ("integer", "number", "boolean",
+                                              "array", "object"):
+                cv = _coerce_value(v, tt)
+                if not isinstance(cv, str):
+                    v = cv
+                    break
+        out[k] = v
+    return out
+
+
+def parse_tool_calls(text, tool_schemas = None):
     """Parse Qwen XML tool calls. Returns (content_without_calls, [calls]).
     A <tool_call> block left unterminated is treated as complete: the
     </tool_call> stop-condition strips the closing tag from generated text."""
@@ -135,6 +210,8 @@ def parse_tool_calls(text):
         for pm in re.finditer(r"<parameter=([^>]+)>\n?(.*?)\n?</parameter>",
                               block[fm.end():], flags = re.S):
             args[pm.group(1).strip()] = pm.group(2)
+        if tool_schemas:
+            args = coerce_tool_args(args, tool_schemas.get(name))
         return {
             "id": f"call_{uuid.uuid4().hex[:12]}", "type": "function",
             "function": {"name": name, "arguments": json.dumps(args)},
@@ -184,6 +261,7 @@ def generate_full(generator, tokenizer, messages, max_tokens, temperature,
                   top_p, top_k, seed, tools, tool_choice = None, on_text = None):
     """Blocking generation; returns (text, tool_calls, finish, p_toks, o_toks,
     reasoning, content)."""
+    schemas = build_tool_schemas(tools)
     tools, directive = tool_choice_directive(tool_choice, tools)
     if directive:
         messages = list(messages)
@@ -239,12 +317,12 @@ def generate_full(generator, tokenizer, messages, max_tokens, temperature,
     job = run_once()
     # Forced tool_choice is a prompt nudge; at temperature > 0 the model can
     # occasionally skip the call. One greedy retry makes it deterministic.
-    if forced_choice and not parse_tool_calls(text)[1]:
+    if forced_choice and not parse_tool_calls(text, schemas)[1]:
         temperature = 0.0
         job = run_once()
     seq = job.sequences[0]
     out_toks = int(seq.sequence_ids.seq_len - prompt_toks)
-    content, calls = parse_tool_calls(text)
+    content, calls = parse_tool_calls(text, schemas)
     if calls:
         finish = "tool_calls"
     else:
@@ -343,6 +421,7 @@ async def chat_completions(request):
     await resp.prepare(request)
     cid = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     model_id = req["model_id"]
+    req_schemas = build_tool_schemas(req["tools"])
 
     async def run():
         loop = asyncio.get_event_loop()
@@ -409,13 +488,15 @@ async def chat_completions(request):
                     if TOOL_CALL_CLOSE in rest:
                         block, pending = rest.split(TOOL_CALL_CLOSE, 1)
                         _, calls = parse_tool_calls(
-                            TOOL_CALL_OPEN + block + TOOL_CALL_CLOSE)
+                            TOOL_CALL_OPEN + block + TOOL_CALL_CLOSE,
+                            req_schemas)
                         for c in calls:
                             await send_call(c)
                         continue
                     # unterminated call: final -> implicit close, else hold
                     if final and "<function=" in rest:
-                        _, calls = parse_tool_calls(TOOL_CALL_OPEN + rest)
+                        _, calls = parse_tool_calls(TOOL_CALL_OPEN + rest,
+                                                    req_schemas)
                         for c in calls:
                             await send_call(c)
                         pending = ""
@@ -464,25 +545,34 @@ def main():
     global MODEL_DIR, DRAFT_DIR, PORT
     ap = argparse.ArgumentParser()
     ap.add_argument("-m", "--model", default = MODEL_DIR)
-    ap.add_argument("-dm", "--draft_model", default = None)
+    ap.add_argument("-dm", "--draft_model", default = DRAFT_DIR)
     ap.add_argument("-gs", "--grid_size", type = int, default = 110)
     ap.add_argument("-cs", "--cache_size", type = int, default = 65536,
                     help = "KV cache size in tokens (default 65536; 8192 default "
                            "of model_init is too small for large tool sets)")
+    ap.add_argument("-cq", "--cache_quant", type = str, default = None,
+                    help = "Quantized KV cache bits, e.g. 8 or 8,4 (k_bits[,v_bits])")
     ap.add_argument("-p", "--port", type = int, default = PORT)
-    ap.add_argument("--host", default = "0.0.0.0")
-    ap.add_argument("-cq", "--cache_quant", default = None,
-                    help = "KV cache quant: none | 8 | 8,4 | fp8 | nvfp4")
+    ap.add_argument("--host", type = str, default = "0.0.0.0",
+                    help = "Interface to bind (use 127.0.0.1 for local-only)")
+    ap.add_argument("-ccs", "--cpu_cache_size", type = float, default = 0.0,
+                    help = "CPU second-tier cache size in GB (pages spill from "
+                           "GPU when the GPU cache is full)")
     args = ap.parse_args()
+    use_draft = args.draft_model.lower() not in ("none", "", "-")
     argv = ["-m", args.model,
             "-gs", str(args.grid_size), "-cs", str(args.cache_size)]
-    if args.draft_model and args.draft_model != "none":
+    if use_draft:
         argv += ["-dm", args.draft_model]
     if args.cache_quant:
         argv += ["-cq", args.cache_quant]
+    if args.cpu_cache_size:
+        argv += ["-ccs", str(args.cpu_cache_size)]
 
-    print(f" == loading {args.model} + draft ...", flush = True)
-    generator, tokenizer = build_model(argv)
+    print(f" == loading {args.model}"
+          + (f" + draft {args.draft_model}" if use_draft else " (no draft)")
+          + " ...", flush = True)
+    generator, tokenizer = build_model(argv, use_draft = use_draft)
     stats["context_length"] = int(args.cache_size)
     print(" == model ready; accepting requests", flush = True)
 

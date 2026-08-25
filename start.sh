@@ -18,20 +18,27 @@ source .env
 if [ ! -x .venv/bin/python ]; then
     echo "First run: creating .venv and installing the exllamav3 engine …"
     python3 -m venv .venv
-    .venv/bin/pip install --quiet --upgrade pip
-    # GPU torch straight from the PyTorch index (PyPI's torch is CPU-only).
-    .venv/bin/pip install --quiet --no-deps torch \
-        --index-url "${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu130}"
+    .venv/bin/pip install --quiet --upgrade pip setuptools wheel typing_extensions packaging
+    # GPU torch + its NVIDIA runtime deps; PyPI stays primary so the
+    # nvidia-* runtime wheels resolve too (cu130 local-version wheel wins).
+    .venv/bin/pip install --quiet torch \
+        --extra-index-url "${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu130}"
     # The engine itself; its requirements.txt supplies the rest of the deps.
-    # Default = upstream exllamav3 (x86 CUDA). The DFlash2/aarch64 fork goes
-    # here — set EXL3_REPO in .env (git+https://… or a local path).
+    # Default = the MiaAI-Lab fork (DFlash2 drafting, NVFP4/FP8 KV, aarch64
+    # GB10 + x86 CUDA). EXL3_REPO in .env overrides (git+https://… or a
+    # local path).
     # --no-build-isolation + the env vars below compile the native ext at
-    # install time (aarch64/GB10 recipe; override via .env as needed).
-    export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-12.0;12.1}"
+    # install time (override via .env as needed).
+    if [ -n "${TORCH_CUDA_ARCH_LIST:-}" ]; then
+        export TORCH_CUDA_ARCH_LIST
+    elif [ "$(uname -m)" = "aarch64" ]; then
+        # GB10/Spark needs the arch list spelled out; x86 auto-detects.
+        export TORCH_CUDA_ARCH_LIST="12.0;12.1"
+    fi
     export CUDA_HOME="${CUDA_HOME:-/usr/local/cuda}"
     export MAX_JOBS="${MAX_JOBS:-4}"
     .venv/bin/pip install --quiet --no-build-isolation \
-        "${EXL3_REPO:-git+https://github.com/turboderp-org/exllamav3}"
+        "${EXL3_REPO:-git+https://github.com/MiaAI-Lab/exllamav3}"
     .venv/bin/pip install --quiet aiohttp huggingface_hub
     echo "Engine installed."
 fi
