@@ -1,4 +1,4 @@
-<h1 align="center">Qwen3.8-27B · EXL3 · Speculative Decoding</h1>
+<h1 align="center">Qwen3.8-27B · EXL3 · DFlash2</h1>
 
 <p align="center">
   <sub>by <a href="https://x.com/MiaAI_lab">Mia'a AI Lab</a></sub>
