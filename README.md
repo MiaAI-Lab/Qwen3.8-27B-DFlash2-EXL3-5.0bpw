@@ -1,6 +1,13 @@
-# Qwen3.8-27B · EXL3 · Speculative Decoding
+<h1 align="center">Qwen3.8-27B · EXL3 · Speculative Decoding</h1>
 
-Private deployment kit for serving **Qwen3.8-27B** quantized to EXL3 3.5bpw
+<p align="center">
+  <sub>by <a href="https://x.com/MiaAI_lab">Mia'a AI Lab</a></sub>
+  <br><br>
+  <a href="https://github.com/sponsors/MiaAI-Lab" target="_blank" rel="noopener noreferrer" style="display:inline-block;margin:0 8px;vertical-align:middle;"><img src="https://img.shields.io/badge/Sponsor%20me%20on%20GitHub-181717?style=for-the-badge&logo=githubsponsors&logoColor=white" alt="Sponsor me on GitHub" height="28" style="height:28px;width:auto;vertical-align:middle;border:0;" /></a>
+  <a href="https://x.com/MiaAI_lab" target="_blank" rel="noopener noreferrer" style="display:inline-block;margin:0 8px;vertical-align:middle;"><img src="https://img.shields.io/badge/Follow%20me%20on%20X-000000?style=for-the-badge&logo=x&logoColor=white" alt="Follow Mia on X" height="28" style="height:28px;width:auto;vertical-align:middle;border:0;" /></a>
+</p>
+
+Deployment kit for serving **Qwen3.8-27B** quantized to EXL3 3.5bpw
 with speculative decoding — **MTP by default** (draft head inside the
 checkpoint, best context per GB) or **DFlash2** (EXL3 5.0bpw draft model,
 ~15% faster) — plus an NVFP4 KV cache lane for maximum context per GB.
@@ -23,10 +30,8 @@ engine is our [exllamav3 fork](https://github.com/MiaAI-Lab/exllamav3)
 ## Quick start
 
 ```bash
-# 1. authenticate to Hugging Face (the weight repos are private):
-#    hf auth login     (or put HF_TOKEN=... in .env — see below)
-# 2. configure and launch:
-cp .env.example .env      # edit: context, GPU memory, HF_TOKEN
+# 1. configure and launch:
+cp .env.example .env      # edit: context, GPU memory
 ./start.sh                # first run: builds .venv + installs the engine,
                           # downloads weights, serves http://localhost:8888/v1
 ```
@@ -34,9 +39,8 @@ cp .env.example .env      # edit: context, GPU memory, HF_TOKEN
 `start.sh` is self-bootstrapping: on first run it creates `.venv`, installs
 GPU torch and pip-installs the exllamav3 engine from this fork (all of
 DFlash2/MTP drafting, NVFP4/FP8 KV and the aarch64 GB10 port are fork
-features). While the GitHub repos are private, set `EXL3_REPO` in `.env` to
-a token URL (`git+https://x-access-token:<PAT>@github.com/MiaAI-Lab/exllamav3`)
-so pip can reach it; it also accepts any other git URL or a local path.
+features). `EXL3_REPO` in `.env` overrides where the engine comes from — any
+git URL or a local path.
 
 Running on a 24 GB GPU (RTX 3090/4090)? Jump to
 [24 GB config](#24-gb-gpus-rtx-3090--4090).
@@ -54,8 +58,7 @@ downloads) — no manual fetching. Set `HF_TARGET_REPO` / `HF_DRAFT_REPO` in
   small GPUs), `dflash2` (dedicated draft model, fastest tokens/s), or
   `none`. `MODEL_DIR` / `DRAFT_DIR` set the target and (for dflash2) draft
   locations; missing dirs are fetched from the Hub automatically
-  (`HF_TARGET_REPO` / `HF_DRAFT_REPO` override the repo ids, `HF_TOKEN`
-  authenticates — repos are private)
+  (`HF_TARGET_REPO` / `HF_DRAFT_REPO` override the repo ids)
 - `CONTEXT_SIZE` — KV cache size in tokens (native limit 262,144; 1M works and
   the launcher swaps in the YaRN config variant automatically)
 - `CACHE_QUANT` — KV format: `none` (fp16) / `8` / `8,4` / `fp8` / `nvfp4`
