@@ -134,9 +134,9 @@ RTX-class notes (vs the DGX Spark the numbers above were measured on):
 
 ## Model cards
 
-- [`model-cards/Qwen3.8-27B-EXL3-3.5bpw.md`](model-cards/Qwen3.8-27B-EXL3-3.5bpw.md) —
+- [`Mia-AiLab/Qwen3.8-27B-EXL3-3.5bpw`](https://huggingface.co/Mia-AiLab/Qwen3.8-27B-EXL3-3.5bpw) —
   target: EXL3 3.5bpw, workload-calibrated, 14.2 GB
-- [`model-cards/Qwen3.8-27B-DFlash2-EXL3-5.0bpw.md`](model-cards/Qwen3.8-27B-DFlash2-EXL3-5.0bpw.md) —
+- [`Mia-AiLab/Qwen3.8-27B-DFlash2-EXL3-5.0bpw`](https://huggingface.co/Mia-AiLab/Qwen3.8-27B-DFlash2-EXL3-5.0bpw) —
   draft: DFlash2 EXL3 5.0bpw, 1.4 GB, +33% decode throughput at acceptance parity
 
 Measured on DGX Spark (GB10): HumanEval-class decode **47.5 tok/s** at
