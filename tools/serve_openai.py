@@ -409,6 +409,15 @@ async def chat_completions(request):
     generator, tokenizer = app["generator"], app["tokenizer"]
     try:
         body = await request.json()
+    except web.HTTPRequestEntityTooLarge:
+        # aiohttp enforces client_max_size inside request.json(); without this
+        # branch it falls into the generic handler below and gets misreported
+        # as "invalid JSON" (400) even though the body parsed fine.
+        return web.json_response(
+            {"error": {"message": f"request body exceeds {request.app['max_body_mb']} MiB limit",
+                       "type": "invalid_request_error",
+                       "code": "request_entity_too_large"}},
+            status = 413)
     except Exception:
         return web.json_response({"error": {"message": "invalid JSON"}}, status = 400)
     req, err = parse_request(body)
@@ -587,6 +596,10 @@ def main():
     ap.add_argument("-ccs", "--cpu_cache_size", type = float, default = 0.0,
                     help = "CPU second-tier cache size in GB (pages spill from "
                            "GPU when the GPU cache is full)")
+    ap.add_argument("--max_body_mb", type = int, default = 64,
+                    help = "max request body size in MiB (aiohttp's built-in "
+                           "default is 1 MiB, far too small for a full tool "
+                           "set + a long transcript)")
     args = ap.parse_args()
     _draft = args.draft_model.lower()
     use_mtp = _draft == "mtp"
@@ -610,9 +623,10 @@ def main():
     stats["context_length"] = int(args.cache_size)
     print(" == model ready; accepting requests", flush = True)
 
-    app = web.Application()
+    app = web.Application(client_max_size = args.max_body_mb * 1024 * 1024)
     app["generator"] = generator
     app["tokenizer"] = tokenizer
+    app["max_body_mb"] = args.max_body_mb
     app.router.add_get("/v1/models", models)
     app.router.add_get("/health", health)
     app.router.add_post("/v1/chat/completions", chat_completions)
