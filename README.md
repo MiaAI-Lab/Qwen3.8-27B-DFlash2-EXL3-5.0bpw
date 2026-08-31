@@ -94,7 +94,7 @@ CACHE_QUANT=nvfp4        # required at this size; lossless at generation level (
 ```bash
 # .env — alternative: DFlash2 at 24 GB
 GPU_MEM_GB=22
-CONTEXT_SIZE=220000
+CONTEXT_SIZE=200000
 CACHE_QUANT=nvfp4
 DRAFT=dflash2
 DRAFT_DIR=models/Qwen3.8-27B-DFlash2-EXL3-5.0bpw   # auto-downloaded
