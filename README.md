@@ -72,7 +72,22 @@ downloads) — no manual fetching. Set `HF_TARGET_REPO` / `HF_DRAFT_REPO` in
   see the 24 GB notes)
 
 Concurrency note: the server generates one request at a time (batch-1
-speculative decoding); concurrent requests queue automatically.
+speculative decoding); concurrent requests queue automatically. Measured on
+DGX Spark with `DRAFT=dflash2`: 8 concurrent requests ran fully sequentially
+(no batching benefit), aggregate throughput ~16.7 tok/s at that concurrency
+— plan capacity accordingly if your workload is concurrent rather than
+single-request.
+
+Reasoning note: the server always reasons — there is currently no way to
+disable it. `chat_template_kwargs.enable_thinking` (the vLLM/SGLang
+convention) is silently ignored. The reasoning trace comes back in a
+separate `reasoning_content` field (both in the full response and in each
+streamed `delta`), but it is **not** a separate token budget: reasoning and
+visible `content` both draw from the same `max_tokens`. With a tight budget
+(e.g. `max_tokens: 16` on a short-answer prompt) I got a response with no
+`content` at all, entirely consumed by the reasoning trace — clients
+expecting a quick, cheap warmup/probe call should budget generously rather
+than assuming a short `max_tokens` implies a short wait.
 
 ## 24 GB GPUs (RTX 3090 / 4090)
 
@@ -146,6 +161,37 @@ RTX-class notes (vs the DGX Spark the numbers above were measured on):
   memory than a 24 GB card has. `DRAFT=none` frees the draft memory too, but
   gives up speculative decoding — `DRAFT=mtp` already dominates it on both
   memory and speed.
+
+## Tool calling
+
+OpenAI-style `tools` / `tool_choice` work (referenced in the file table
+above but not otherwise documented here). Verified request/response shape:
+
+```bash
+curl http://localhost:8888/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "qwen3.8-27b-exl3-3.5bpw-wm",
+    "messages": [{"role": "user", "content": "What is the weather in Lyon?"}],
+    "tools": [{
+      "type": "function",
+      "function": {
+        "name": "get_weather",
+        "description": "Get current weather",
+        "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}
+      }
+    }],
+    "tool_choice": "auto",
+    "max_tokens": 300
+  }'
+```
+
+Returns a normal OpenAI `tool_calls` array (`finish_reason: "tool_calls"`,
+`message.content: null`) alongside the usual `reasoning_content`. The
+`model` id in responses doesn't necessarily match `HF_TARGET_REPO` or
+`MODEL_DIR` verbatim (I saw `qwen3.8-27b-exl3-3.5bpw-wm` for
+`MODEL_DIR=models/Qwen3.8-27B-EXL3-3.5bpw`) — check `/v1/models` rather
+than assuming the id a client should send.
 
 ## Model cards
 
