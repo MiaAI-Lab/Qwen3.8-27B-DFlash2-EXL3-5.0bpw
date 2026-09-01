@@ -10,7 +10,8 @@
 Deployment kit for serving **Qwen3.8-27B** quantized to EXL3 3.5bpw
 with speculative decoding — **MTP by default** (draft head inside the
 checkpoint, best context per GB) or **DFlash2** (EXL3 5.0bpw draft model,
-~15% faster) — plus an NVFP4 KV cache lane for maximum context per GB.
+~15% faster) — plus a ~4.5-bit KV cache lane (NVFP4 on Ada/Hopper/Blackwell,
+Hadamard-4 on Ampere) for maximum context per GB.
 
 This repo contains the launcher, server and configuration. The model weights
 live on Hugging Face (see [Model cards](#model-cards)) and the inference
@@ -61,8 +62,10 @@ downloads) — no manual fetching. Set `HF_TARGET_REPO` / `HF_DRAFT_REPO` in
   (`HF_TARGET_REPO` / `HF_DRAFT_REPO` override the repo ids)
 - `CONTEXT_SIZE` — KV cache size in tokens (native limit 262,144; 1M works and
   the launcher swaps in the YaRN config variant automatically)
-- `CACHE_QUANT` — KV format: `none` (fp16) / `8` / `8,4` / `fp8` / `nvfp4`
-  (~4.5 bits/elem, measured lossless at generation level)
+- `CACHE_QUANT` — KV format: `none` (fp16) / `8` / `8,4` / `4` / `fp8` / `nvfp4`.
+  `nvfp4` and `fp8` need compute capability ≥ 8.9 (Ada 4090, Hopper, Blackwell /
+  GB10). Ampere (3090, sm_86) cannot compile those Triton kernels — use
+  Hadamard `4` (~4.5 bits/elem, same density as NVFP4) or `8` / `8,4`
 - `GPU_MEM_GB` — memory budget for weights + caches; auto-detected when unset
   (discrete GPU: VRAM − 2 GB, unified/GB10: available RAM − 16 GB)
 - `CPU_CACHE_GB` — CPU second-tier cache knob (accepted but not yet active;
@@ -74,14 +77,24 @@ speculative decoding); concurrent requests queue automatically.
 ## 24 GB GPUs (RTX 3090 / 4090)
 
 The kit targets DGX Spark (121 GB) by default. On a 24 GB card the recipe is
-the same weights, a tighter KV budget, and NVFP4 KV. The default drafter
-(MTP) is the right choice here:
+the same weights, a tighter KV budget, and a ~4.5-bit KV format so the native
+262k context still fits. The default drafter (MTP) is the right choice here.
+
+**KV format is GPU-dependent.** This fork's `nvfp4` / `fp8` lanes are software
+packed caches (E2M1 + E4M3 scales, or raw E4M3) with Triton online dequant.
+Those kernels use `fp8e4nv`, which Triton only compiles on compute capability
+**≥ 8.9**. They are **not** Blackwell tensor-core NVFP4 matmul.
+
+| GPU | Arch | `CACHE_QUANT` for 262k |
+|---|---|---|
+| RTX 4090, GB10, Hopper+ | sm ≥ 8.9 | `nvfp4` (measured lossless at generation level) |
+| RTX 3090 | Ampere sm_86 | `4` (Hadamard int4; same ~4.5 bits/elem). `nvfp4` and `fp8` will fail to compile |
 
 ```bash
 # .env — 24 GB recipe (MTP, the default)
 GPU_MEM_GB=22            # auto-detected when unset; explicit for clarity
 CONTEXT_SIZE=262144      # full native context fits (see math below)
-CACHE_QUANT=nvfp4        # required at this size; lossless at generation level (measured)
+CACHE_QUANT=nvfp4        # 4090 / GB10 / Hopper+. On a 3090 use: CACHE_QUANT=4
 # DRAFT=mtp is the default — no extra config, no draft download
 ```
 
@@ -95,19 +108,21 @@ CACHE_QUANT=nvfp4        # required at this size; lossless at generation level (
 # .env — alternative: DFlash2 at 24 GB
 GPU_MEM_GB=22
 CONTEXT_SIZE=200000
-CACHE_QUANT=nvfp4
+CACHE_QUANT=nvfp4        # 3090: CACHE_QUANT=4
 DRAFT=dflash2
 DRAFT_DIR=models/Qwen3.8-27B-DFlash2-EXL3-5.0bpw   # auto-downloaded
 # CPU_CACHE_GB=16        # CPU spill tier: NOT YET ACTIVE (planned; see notes)
 ```
 
 Memory math (GiB): target weights 14.2 + MTP head ~0.05 → ~6.7 GB left for
-KV at a 22 GB budget; NVFP4 KV costs ~18 KB/token for the target plus ~1.2
-KB/token for the MTP head (only the 16 full-attention layers hold KV; fp16
-is ~64 KB/token) → the full native 262k fits with ~1 GB to spare. With the
-DFlash2 draft instead: 15.6 GiB of weights + ~24 KB/token → ~220k–262k.
-Past that the cache does not hold today; the CPU spill tier is planned but
-not yet implemented.
+KV at a 22 GB budget; NVFP4 or Hadamard-4 KV costs ~18 KB/token for the
+target plus ~1.2 KB/token for the MTP head (only the 16 full-attention layers
+hold KV; fp16 is ~64 KB/token) → the full native 262k fits with ~1 GB to
+spare. With the DFlash2 draft instead: 15.6 GiB of weights + ~24 KB/token →
+~220k–262k. `CACHE_QUANT=8` (~8.5 bits) needs ~9.1 GB at 262k and will not
+leave that much headroom; fp16 (~17 GB at 262k) does not fit. Past the
+resident limit the cache does not hold today; the CPU spill tier is planned
+but not yet implemented.
 
 RTX-class notes (vs the DGX Spark the numbers above were measured on):
 
@@ -120,13 +135,13 @@ RTX-class notes (vs the DGX Spark the numbers above were measured on):
   a desktop's 32–64 GB of system RAM backs cold KV pages over PCIe — slow to
   touch, but it converts the hard ~220k resident limit into a graceful
   decline. Today the knob is accepted but inert.
-- **The 1M YaRN config does not fit**: 1M tokens of NVFP4 KV ≈ 19 GB on top of
-  15.6 GB of weights. Only reachable with CPU spill, and 262k is the
+- **The 1M YaRN config does not fit**: 1M tokens of ~4.5-bit KV ≈ 19 GB on
+  top of 15.6 GB of weights. Only reachable with CPU spill, and 262k is the
   quality-faithful limit anyway — don't expect the 1M headroom to be useful
   here.
 - **Use the fork on x86 too**: stock exllamav3 serves the model on CUDA, but
-  NVFP4 KV and DFlash2 drafting are fork features; install the fork's x86 CUDA
-  build.
+  NVFP4/FP8 KV and DFlash2 drafting are fork features; install the fork's x86
+  CUDA build. Hadamard `4` / `8` / `8,4` KV is upstream.
 - Need more context than ~262k? That requires the YaRN 1M config and more
   memory than a 24 GB card has. `DRAFT=none` frees the draft memory too, but
   gives up speculative decoding — `DRAFT=mtp` already dominates it on both
