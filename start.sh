@@ -123,8 +123,8 @@ if [ ! -x .venv/bin/python ] \
     _quiet_step "4/5 ${_engine_note} (5–20 min depending on machine)" \
         .venv/bin/pip install --no-build-isolation \
             "${_engine_src}"
-    _quiet_step "5/5 server dependencies (aiohttp, huggingface_hub)" \
-        .venv/bin/pip install --quiet aiohttp huggingface_hub
+    _quiet_step "5/5 server dependencies (aiohttp, huggingface_hub, transformers)" \
+        .venv/bin/pip install --quiet aiohttp huggingface_hub transformers
     echo "Setup complete."
 fi
 
