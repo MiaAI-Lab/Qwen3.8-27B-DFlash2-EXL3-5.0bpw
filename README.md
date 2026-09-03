@@ -37,6 +37,11 @@ cp .env.example .env      # edit: context, GPU memory
                           # downloads weights, serves http://localhost:8888/v1
 ```
 
+On native Windows (PowerShell 7+), use `start.ps1` / `stop.ps1` instead
+(same `.env`). First run needs a VS Developer prompt (`vcvars64.bat`,
+x64) so `cl.exe` is on PATH for the CUDA extension build. On a 3090 set
+`CACHE_QUANT=4` (Hadamard int4; `nvfp4`/`fp8` need sm >= 8.9).
+
 `start.sh` is self-bootstrapping: on first run it creates `.venv`, installs
 GPU torch and pip-installs the exllamav3 engine from this fork (all of
 DFlash2/MTP drafting, NVFP4/FP8 KV and the aarch64 GB10 port are fork
