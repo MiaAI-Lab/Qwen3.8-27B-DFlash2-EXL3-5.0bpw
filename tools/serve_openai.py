@@ -276,12 +276,14 @@ def tool_choice_directive(tool_choice, tools):
     return tools, None
 
 
-def generate_full(generator, tokenizer, messages, max_tokens, temperature,
-                  top_p, top_k, seed, tools, tool_choice = None, stop = None,
-                  on_text = None):
-    """Blocking generation; returns (text, tool_calls, finish, p_toks, o_toks,
-    reasoning, content)."""
-    schemas = build_tool_schemas(tools)
+def render_input_ids(tokenizer, messages, tools, tool_choice = None):
+    """Apply the chat template and return the prompt token ids.
+
+    Split out of generate_full so the request handler can measure the prompt
+    BEFORE choosing a response mode — a streaming request that overflows the
+    cache has to be rejected with a real HTTP status, and once the SSE stream
+    is open it is too late to send one.
+    """
     tools, directive = tool_choice_directive(tool_choice, tools)
     if directive:
         messages = list(messages)
@@ -292,9 +294,56 @@ def generate_full(generator, tokenizer, messages, max_tokens, temperature,
             messages[0] = first
         else:
             messages = [{"role": "system", "content": directive}] + messages
-    input_ids = tokenizer.hf_chat_template(
+    return tokenizer.hf_chat_template(
         messages, add_generation_prompt = True, enable_thinking = True,
         tools = tools)
+
+
+def context_overflow_error(prompt_toks, max_tokens, capacity):
+    """OpenAI-standard context_length_exceeded body.
+
+    Shape matters as much as content: OpenAI-compatible clients decide whether
+    a 400 means "too long" (compact the conversation and retry) or "malformed"
+    (give up) by reading `code`, falling back to phrase-matching `message`. An
+    agent harness that cannot tell the two apart stops compacting and simply
+    fails, so keep BOTH the code and the canonical "maximum context length" /
+    "reduce the length" wording when editing this.
+    """
+    return {"error": {
+        "message": (
+            f"This model's maximum context length is {capacity} tokens. "
+            f"However, your messages resulted in {prompt_toks} tokens "
+            f"({max_tokens} requested for the completion). "
+            f"Please reduce the length of the messages."),
+        "type": "invalid_request_error",
+        "code": "context_length_exceeded",
+        "param": "messages"}}
+
+
+def is_capacity_assertion(exc):
+    """Whether an AssertionError is exllamav3's cache-capacity check.
+
+    Matches generator/job.py's "Job requires N pages (only M available) and
+    cannot be enqueued". Deliberately narrow: other assertions (e.g. the
+    cache-page-size one) are genuine bad requests, not context overflow, and
+    must not be relabelled.
+    """
+    t = str(exc).lower()
+    return "pages" in t and "cannot be enqueued" in t
+
+
+def generate_full(generator, tokenizer, messages, max_tokens, temperature,
+                  top_p, top_k, seed, tools, tool_choice = None, stop = None,
+                  on_text = None, input_ids = None):
+    """Blocking generation; returns (text, tool_calls, finish, p_toks, o_toks,
+    reasoning, content).
+
+    `input_ids` may be supplied by a caller that already rendered the prompt
+    (see render_input_ids), so the chat template is not applied twice.
+    """
+    schemas = build_tool_schemas(tools)
+    if input_ids is None:
+        input_ids = render_input_ids(tokenizer, messages, tools, tool_choice)
     prompt_toks = int(input_ids.shape[-1])
     from exllamav3.generator.sampler.presets import ComboSampler
     from exllamav3 import Job
@@ -425,13 +474,44 @@ async def chat_completions(request):
         return web.json_response({"error": {"message": err}}, status = 400)
 
     import asyncio
+
+    # --- pre-flight length check -------------------------------------------
+    # Render the prompt up front so an over-long request fails with a proper
+    # HTTP 400 rather than deep inside the generator (where, for a streaming
+    # request, the 200 + SSE headers have already gone out). The rendered ids
+    # are handed to generate_full so nothing is tokenized twice.
+    try:
+        input_ids = await asyncio.to_thread(
+            render_input_ids, tokenizer, req["messages"], req["tools"],
+            req["tool_choice"])
+    except Exception as e:
+        return web.json_response(
+            {"error": {"message": f"could not render prompt: {e}",
+                       "type": "invalid_request_error"}},
+            status = 400)
+
+    prompt_toks = int(input_ids.shape[-1])
+    capacity = int(getattr(generator, "max_total_tokens", 0) or 0)
+    if capacity and prompt_toks + req["max_tokens"] > capacity:
+        return web.json_response(
+            context_overflow_error(prompt_toks, req["max_tokens"], capacity),
+            status = 400)
+
     if not req["stream"]:
         try:
             text, calls, finish, ptoks, otoks, reasoning, content = await asyncio.to_thread(
                 generate_full, generator, tokenizer, req["messages"],
                 req["max_tokens"], req["temperature"], req["top_p"], req["top_k"],
-                req["seed"], req["tools"], req["tool_choice"], req["stop"])
+                req["seed"], req["tools"], req["tool_choice"], req["stop"],
+                None, input_ids)
         except AssertionError as e:
+            # Backstop: page-rounding means the check above cannot exactly
+            # mirror the generator's own accounting.
+            if is_capacity_assertion(e):
+                return web.json_response(
+                    context_overflow_error(prompt_toks, req["max_tokens"],
+                                           capacity or prompt_toks),
+                    status = 400)
             return web.json_response(
                 {"error": {"message": f"context/cache: {e}", "type": "invalid_request_error"}},
                 status = 400)
@@ -473,11 +553,22 @@ async def chat_completions(request):
                     generator, tokenizer, req["messages"], req["max_tokens"],
                     req["temperature"], req["top_p"], req["top_k"],
                     req["seed"], req["tools"], req["tool_choice"], req["stop"],
-                    on_text = None if forced_choice else on_text)
+                    on_text = None if forced_choice else on_text,
+                    input_ids = input_ids)
                 loop.call_soon_threadsafe(queue.put_nowait,
                                           ("done", (calls, finish, reasoning, content)))
+            except AssertionError as e:
+                # The stream is already open, so this cannot become a 400.
+                # Emit a classifiable error frame instead of a bare string.
+                err = (context_overflow_error(prompt_toks, req["max_tokens"],
+                                              capacity or prompt_toks)
+                       if is_capacity_assertion(e)
+                       else {"error": {"message": f"context/cache: {e}",
+                                       "type": "invalid_request_error"}})
+                loop.call_soon_threadsafe(queue.put_nowait, ("error", err))
             except Exception as e:
-                loop.call_soon_threadsafe(queue.put_nowait, ("error", str(e)))
+                loop.call_soon_threadsafe(queue.put_nowait, ("error", {
+                    "error": {"message": str(e), "type": "server_error"}}))
         loop.run_in_executor(None, worker)
 
         async def send(delta, finish = None):
@@ -546,8 +637,10 @@ async def chat_completions(request):
         while True:
             kind, payload = await queue.get()
             if kind == "error":
-                await resp.write(
-                    f'data: {json.dumps({"error": {"message": payload}})}\n\n'.encode())
+                # payload is already a full {"error": {...}} object carrying
+                # type/code, so a client can classify a mid-stream failure the
+                # same way it would a non-streaming one.
+                await resp.write(f'data: {json.dumps(payload)}\n\n'.encode())
                 break
             if kind == "delta":
                 pending += payload
