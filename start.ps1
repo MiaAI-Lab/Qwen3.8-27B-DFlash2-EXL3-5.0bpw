@@ -96,7 +96,7 @@ if (-not (Test-Path $VenvPython) -or -not (Test-EngineImport $VenvPython))
 }
 
 $PYTHON = $VenvPython
-$env:PATH = (Join-Path $PSScriptRoot '.venv/Scripts') + ';' + $env:PATH
+$env:PATH = (Split-Path $VenvPython) + ';' + $env:PATH
 
 $MODEL_DIR = $env:MODEL_DIR; if (-not $MODEL_DIR)
 { $MODEL_DIR = $cfg['MODEL_DIR']
