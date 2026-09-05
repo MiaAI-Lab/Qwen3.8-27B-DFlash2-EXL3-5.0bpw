@@ -185,6 +185,9 @@ function Get-Model($repo, $dir, $label)
     }
     Write-Host "$label`: download $repo to $dir ..."
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    # huggingface_hub writes .incomplete files under <dir>/.cache/huggingface/download
+    # and fails with FileNotFoundError on Windows when that tree is missing.
+    New-Item -ItemType Directory -Force -Path (Join-Path $dir '.cache\huggingface\download') | Out-Null
     & $PYTHON -c 'from huggingface_hub import snapshot_download; import sys; print(snapshot_download(repo_id=sys.argv[1], local_dir=sys.argv[2]))' $repo $dir
 }
 
@@ -202,6 +205,10 @@ switch ($DRAFT)
             $draftDir = 'models/Qwen3.8-27B-DFlash2-EXL3-5.0bpw'
         }
         Get-Model -Repo $HF_DRAFT_REPO -Dir $draftDir -Label 'DFlash2 draft'
+        if (-not (Get-ChildItem (Join-Path $draftDir '*.safetensors') -ErrorAction SilentlyContinue))
+        {
+            Write-Error "DFlash2 draft download failed; refusing to start with an unusable draft model."; exit 1
+        }
         $cfg['DRAFT_DIR'] = $draftDir
     }
     'none'
