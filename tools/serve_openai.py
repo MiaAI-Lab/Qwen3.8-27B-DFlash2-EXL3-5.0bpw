@@ -42,6 +42,10 @@ MODEL_DIR = "test_models/Qwen3.8-27B-exl3-3.5bpw-wm"
 DRAFT_DIR = "mtp"   # default drafting method: MTP head (no external draft model)
 PORT = 8888
 
+# Suppress Qwen thinking traces in API completions when NO_THINKING=1.
+import os
+NO_THINKING = os.environ.get("NO_THINKING", "") == "1"
+
 gen_lock = threading.Lock()          # serialize generation (batch-1 draft)
 stats_lock = threading.Lock()
 # Cumulative counters for sparkDash live tok/s (GET /health).
@@ -293,7 +297,7 @@ def generate_full(generator, tokenizer, messages, max_tokens, temperature,
         else:
             messages = [{"role": "system", "content": directive}] + messages
     input_ids = tokenizer.hf_chat_template(
-        messages, add_generation_prompt = True, enable_thinking = True,
+        messages, add_generation_prompt = True, enable_thinking = not NO_THINKING,
         tools = tools)
     prompt_toks = int(input_ids.shape[-1])
     from exllamav3.generator.sampler.presets import ComboSampler
@@ -475,7 +479,7 @@ async def chat_completions(request):
                     req["seed"], req["tools"], req["tool_choice"], req["stop"],
                     on_text = None if forced_choice else on_text)
                 loop.call_soon_threadsafe(queue.put_nowait,
-                                          ("done", (calls, finish, reasoning, content)))
+                                          ("done", (calls, finish, reasoning, content, ptoks, otoks)))
             except Exception as e:
                 loop.call_soon_threadsafe(queue.put_nowait, ("error", str(e)))
         loop.run_in_executor(None, worker)
@@ -489,7 +493,7 @@ async def chat_completions(request):
 
         pending, finish, calls_emitted = "", None, False
         call_idx = [0]
-        in_think = [True]          # generation starts inside <think> (template)
+        in_think = [not NO_THINKING]  # generation starts inside <think> unless suppressed
         THINK_CLOSE = "</think>"
 
         async def send_call(c):
@@ -553,7 +557,7 @@ async def chat_completions(request):
                 pending += payload
                 await flush_pending()
             elif kind == "done":
-                calls, finish, reasoning, content = payload
+                calls, finish, reasoning, content, ptoks, otoks = payload
                 await flush_pending(final = True)
                 if forced_choice:
                     # Buffered path (no deltas were streamed): emit the
@@ -566,6 +570,13 @@ async def chat_completions(request):
                     for c in calls:
                         await send_call(c)
                 await send({}, finish = finish)
+                # Emit OpenAI usage chunk (bench harness reads usage)
+                usage_chunk = {"id": cid, "object": "chat.completion.chunk",
+                               "created": int(time.time()), "model": model_id,
+                               "choices": [], "usage": {
+                                   "prompt_tokens": ptoks, "completion_tokens": otoks,
+                                   "total_tokens": ptoks + otoks}}
+                await resp.write(f"data: {json.dumps(usage_chunk)}\n\n".encode())
                 await resp.write(b"data: [DONE]\n\n")
                 break
         await resp.write_eof()
