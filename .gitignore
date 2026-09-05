@@ -3,3 +3,4 @@
 models/
 # runtime: server conversation log
 jobs.jsonl
+tools/__pycache__/
