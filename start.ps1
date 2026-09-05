@@ -172,7 +172,7 @@ switch ($DRAFT) {
     }
     'dflash2' {
         $draftDir = $env:DRAFT_DIR; if (-not $draftDir)
-        $draftDir =  =~ s/.*/        { $draftDir = $cfg['DRAFT_DIR'] }/r
+        { $draftDir = $cfg['DRAFT_DIR'] }
         if (-not $draftDir -or $draftDir -eq 'none') {
             $draftDir = 'models/Qwen3.8-27B-DFlash2-EXL3-5.0bpw'
         }
